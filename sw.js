@@ -1,5 +1,5 @@
 /* 班委工作台 Service Worker - PWA 离线支持 */
-const CACHE_NAME = 'class-workbench-v9';
+const CACHE_NAME = 'class-workbench-v10';
 
 // 云同步相关域名：数据请求一律直连网络，绝不缓存（否则设备会一直读到过期云端数据）
 const CLOUD_HOSTS = [

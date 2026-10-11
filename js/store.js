@@ -438,10 +438,17 @@ const Store = {
       if (MODULE_CONFIG[moduleId].type === 'schedule') {
         data[moduleId] = this.getSchedule();
       } else {
-        data[moduleId] = this.get(moduleId);
+        let rows = this.get(moduleId);
+        // 类型防御：模块数据必须是数组；损坏（对象/其他类型）时修正为空数组，防止污染云端
+        if (!Array.isArray(rows)) {
+          console.error('检测到模块 ' + moduleId + ' 数据格式损坏，已重置为空列表');
+          rows = [];
+          try { localStorage.setItem(this.getKey(moduleId), '[]'); } catch (e) {}
+        }
+        data[moduleId] = rows;
       }
     });
-    data._files = this.getFiles();
+    data._files = Array.isArray(this.getFiles()) ? this.getFiles() : [];
     return data;
   },
 
@@ -490,8 +497,11 @@ const Store = {
       if (cloudData[moduleId] !== undefined) {
         if (MODULE_CONFIG[moduleId].type === 'schedule') {
           localStorage.setItem(this.getKey('schedule'), JSON.stringify(cloudData[moduleId]));
-        } else {
+        } else if (Array.isArray(cloudData[moduleId])) {
+          // 类型防御：只接受数组形式的模块数据，损坏数据不覆盖本地
           localStorage.setItem(this.getKey(moduleId), JSON.stringify(cloudData[moduleId]));
+        } else {
+          console.warn('云端模块 ' + moduleId + ' 数据格式异常（非数组），已忽略');
         }
       }
     });
@@ -654,6 +664,11 @@ const Store = {
   },
 
   save(moduleId, data) {
+    // 类型防御：模块数据必须是数组，拒绝把单条对象等错误结构写入
+    if (!Array.isArray(data)) {
+      console.error('Store.save 拒绝写入非数组数据:', moduleId, typeof data);
+      return;
+    }
     try {
       localStorage.setItem(this.getKey(moduleId), JSON.stringify(data));
     } catch (e) {
