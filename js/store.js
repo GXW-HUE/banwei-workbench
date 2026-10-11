@@ -138,6 +138,12 @@ const Store = {
   async pushToCloud() {
     if (!this.CLOUD.enabled) return { success: false };
     if (this.CLOUD.isSyncing) return { success: false, reason: 'busy' };
+    // 正在拉取云端数据时禁止推送：等拉取完成后自动补推（防止用本地示例数据覆盖云端）
+    if (this.CLOUD.pulling) {
+      this.CLOUD.pendingPush = true;
+      this._setDirty();
+      return { success: false, reason: 'pulling' };
+    }
     this._setDirty();
     // 冲突检测：推送前先看云端是否被其他设备更新过（多通道拉取，弱网也能成功）
     // 原则：记录数多的为准；数量相同比修改时间；云端拉取失败则拒绝推送防覆盖（稍后自动重试）
