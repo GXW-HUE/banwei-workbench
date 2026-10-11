@@ -398,10 +398,10 @@ const Store = {
     setInterval(() => {
       if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
     }, 20000);
-    // 页面开着时每 20s 自动检查其他设备的新数据（接近"立马同步"）
+    // 页面开着时每 15s 自动检查其他设备的新数据（接近"立马同步"）
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
-    }, 20000);
+    }, 15000);
   },
 
   // 拉取完成后：若有待推送的改动，补推一次
@@ -416,6 +416,8 @@ const Store = {
 
   async _foregroundSync() {
     if (this.CLOUD.isSyncing || this.CLOUD.pulling) return;
+    // 本地有待推送改动时跳过定时/焦点拉取，避免拉取占用通道阻塞推送（推送队列自行处理）
+    if (this.CLOUD.dirty) return;
     // 最小间隔保护：focus/visibility 事件可能短时间内连续触发
     const now = Date.now();
     if (this.CLOUD._lastPullAt && now - this.CLOUD._lastPullAt < 10000) return;
