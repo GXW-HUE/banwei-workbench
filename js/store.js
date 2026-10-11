@@ -154,21 +154,27 @@ const Store = {
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
-        this._fetchOneChannel(ch, 8000, controllers[i]).then(r => {
+        this._fetchOneChannel(ch, ch.api ? 10000 : 8000, controllers[i]).then(r => {
           // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
           if (r.success) {
             if (r.hasData) fireQuick(r);
-            // 首个通道成功后，给权威通道 2.5s 追赶，随后中止慢速通道提前收尾（拉取≈3-5s）
-            if (!settleTimer) {
-              settleTimer = setTimeout(() => controllers.forEach(c => { try { c.abort(); } catch (e2) {} }), 2500);
+            if (ch.api && r.hasData) {
+              // 权威 api 通道成功（数据最新、无缓存）：立即中止其余通道收尾
+              if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+              controllers.forEach((c, ci) => { if (ci !== i) { try { c.abort(); } catch (e2) {} } });
+            } else if (!ch.api && !settleTimer) {
+              // 代理通道先成功：给权威 api 2.5s 追赶，仅中止其他慢代理（绝不中止 api）
+              settleTimer = setTimeout(() => controllers.forEach((c, ci) => {
+                if (ci !== i && !channels[ci].api) { try { c.abort(); } catch (e2) {} }
+              }), 2500);
             }
             resolve(r);
           }
           else reject(new Error('empty'));
         }, reject);
       };
-      // API 通道仅延迟 0.3s（保证认证通道也参与快速返回）
-      if (ch.api) setTimeout(start, 300); else start();
+      // 所有通道同时发起（含权威 api 通道）；api 直连带 token、无 CDN 缓存，是最终裁决来源
+      start();
     }));
     try {
       const settled = await Promise.allSettled(tasks);
@@ -182,14 +188,16 @@ const Store = {
       this.CLOUD.cloudChecked = true;
       this.CLOUD.initialPulling = false;
       this.CLOUD._lastPullOkAt = Date.now();
-      // 从"有数据"的成功结果中取 lastModified 最新的（防止代理缓存旧数据）
+      // 从"有数据"的成功结果中选择最终采用值：权威 api（带 token、无 CDN 缓存）优先；
+      // api 不可用时再按 lastModified 取最新的代理结果（防止代理缓存旧数据）
       const withData = successes.filter(r => r.hasData && r.data);
+      const apiBest = withData.find(r => r.channel === 'api');
       withData.sort((a, b) => {
         const am = a.data.lastModified ? new Date(a.data.lastModified).getTime() : 0;
         const bm = b.data.lastModified ? new Date(b.data.lastModified).getTime() : 0;
         return bm - am;
       });
-      const best = withData[0] || successes[0];
+      const best = apiBest || withData[0] || successes[0];
       this.CLOUD.lastSyncTime = new Date().toISOString();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this._updateIndicator();
