@@ -656,10 +656,11 @@ const Store = {
           const et = Date.parse(ex.updatedAt || ex.createdAt || 0);
           if (rt > et) map.set(r.id, r);                                  // 同 ID 取更新时间晚的
         } else {
-          const created = Date.parse(r.createdAt || r.updatedAt || 0);
-          // 本地离线新增（晚于上次同步）或本地整体领先 → 保留待推送；
-          // 否则视为其他设备已删除的旧记录，丢弃（实现跨设备删除同步）
-          if ((created > 0 && created > lastSync) || localAhead) { map.set(r.id, r); localHasExtra = true; }
+          // 本地独有的记录/文件一律保留并待推送；跨设备删除完全由"墓碑"判定。
+          // （旧逻辑用 createdAt<上次同步水位 推断"别处已删除"，但推送前拉取/定时轮询会不断推进
+          //   同步水位，反而会把刚上传、还没来得及推送的文件误判成已删除而丢弃，故移除该启发式。）
+          map.set(r.id, r);
+          localHasExtra = true;
         }
       });
       return Array.from(map.values());
