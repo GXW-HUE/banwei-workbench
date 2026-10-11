@@ -26,6 +26,8 @@ const Store = {
     syncStatus: 'idle',    // idle | pulling | pushing | dirty | error
     dirty: false,          // 本机有改动尚未成功推送
     pendingPush: false,    // pulling 期间收到的推送请求，pulling 结束后补推
+    cloudChecked: false,   // 本次运行是否已成功校验过云端（防止首拉未完成时用示例数据污染云端）
+    initialPulling: true,  // 启动后的首次云端拉取是否仍在进行
     realtimeStarted: false
   },
 
@@ -112,7 +114,8 @@ const Store = {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
         this._fetchOneChannel(ch, 8000, controllers[i]).then(r => {
-          if (r.success && r.hasData) { fireQuick(r); resolve(r); }
+          // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
+          if (r.success) { if (r.hasData) fireQuick(r); resolve(r); }
           else reject(new Error('empty'));
         }, reject);
       };
@@ -127,13 +130,17 @@ const Store = {
         const errs = settled.filter(r => r.status === 'rejected').map(r => String(r.reason).slice(0, 40));
         throw new Error('all channels failed: ' + errs.join(' | '));
       }
-      // 取 lastModified 最新的结果（防止某个代理返回缓存的旧数据）
-      successes.sort((a, b) => {
-        const am = a.data && a.data.lastModified ? new Date(a.data.lastModified).getTime() : 0;
-        const bm = b.data && b.data.lastModified ? new Date(b.data.lastModified).getTime() : 0;
+      // 至少一个通道成功响应（无论云端有无数据），即视为已完成云端校验
+      this.CLOUD.cloudChecked = true;
+      this.CLOUD.initialPulling = false;
+      // 从"有数据"的成功结果中取 lastModified 最新的（防止代理缓存旧数据）
+      const withData = successes.filter(r => r.hasData && r.data);
+      withData.sort((a, b) => {
+        const am = a.data.lastModified ? new Date(a.data.lastModified).getTime() : 0;
+        const bm = b.data.lastModified ? new Date(b.data.lastModified).getTime() : 0;
         return bm - am;
       });
-      const best = successes[0];
+      const best = withData[0] || successes[0];
       this.CLOUD.lastSyncTime = new Date().toISOString();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this._updateIndicator();
@@ -180,6 +187,15 @@ const Store = {
       this.CLOUD.pendingPush = true;
       this._setDirty();
       return { success: false, reason: 'pulling' };
+    }
+    // 首次云端校验未完成前禁止推送：防止全新设备/弱网首拉失败时把内置示例数据推上云端
+    if (!this.CLOUD.cloudChecked) {
+      this.CLOUD.pendingPush = true;
+      this._setDirty();
+      if (!this.CLOUD.pullPromise) {
+        this.fetchFromCloud().then(() => this._afterPullMaybePush()).catch(() => {});
+      }
+      return { success: false, reason: 'cloud_unchecked' };
     }
     this.CLOUD.pushInFlight = true;
     // 记录本次推送是否由本地改动触发（schedulePush 已先置 dirty=true）
@@ -293,6 +309,8 @@ const Store = {
   flushBeforeHide() {
     if (!this.CLOUD.enabled || !this.CLOUD.dirty) return;
     if (this.CLOUD.isSyncing || this.CLOUD.pushInFlight) return;
+    // 未完成首次云端校验前不直推（防止全新设备把内置示例数据在关闭瞬间推上云端）
+    if (!this.CLOUD.cloudChecked) return;
     try {
       const allData = this._safeCollectAllData();
       allData.lastModified = new Date().toISOString();
@@ -384,6 +402,16 @@ const Store = {
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
     }, 20000);
+  },
+
+  // 拉取完成后：若有待推送的改动，补推一次
+  _afterPullMaybePush() {
+    if (this.CLOUD.cloudChecked && (this.CLOUD.pendingPush || this.CLOUD.dirty)) {
+      this.CLOUD.pendingPush = false;
+      setTimeout(() => {
+        if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !this.CLOUD.pulling) this.pushToCloud();
+      }, 300);
+    }
   },
 
   async _foregroundSync() {
