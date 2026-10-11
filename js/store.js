@@ -110,12 +110,20 @@ const Store = {
         try { onQuick(r); } catch (e) {}
       }
     };
+    let settleTimer = null;
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
         this._fetchOneChannel(ch, 8000, controllers[i]).then(r => {
           // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
-          if (r.success) { if (r.hasData) fireQuick(r); resolve(r); }
+          if (r.success) {
+            if (r.hasData) fireQuick(r);
+            // 首个通道成功后，给权威通道 2.5s 追赶，随后中止慢速通道提前收尾（拉取≈3-5s）
+            if (!settleTimer) {
+              settleTimer = setTimeout(() => controllers.forEach(c => { try { c.abort(); } catch (e2) {} }), 2500);
+            }
+            resolve(r);
+          }
           else reject(new Error('empty'));
         }, reject);
       };
@@ -656,7 +664,7 @@ const Store = {
         // pulling 期间用户做了上传/修改：拉取结束后补推
         if (this.CLOUD.pendingPush) {
           this.CLOUD.pendingPush = false;
-          setTimeout(() => { if (!this.CLOUD.isSyncing) this.pushToCloud(); }, 800);
+          setTimeout(() => { if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this.pushToCloud(); }, 300);
         }
       }).catch(e => {
         this.CLOUD.pulling = false;
@@ -665,7 +673,7 @@ const Store = {
         console.warn('云端拉取异常:', e);
         if (this.CLOUD.pendingPush) {
           this.CLOUD.pendingPush = false;
-          setTimeout(() => { if (!this.CLOUD.isSyncing) this.pushToCloud(); }, 800);
+          setTimeout(() => { if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this.pushToCloud(); }, 300);
         }
       });
       // 启动实时同步调度（网络恢复/回到前台/定时重试）
