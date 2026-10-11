@@ -255,69 +255,78 @@ const Store = {
       return { success: false, reason: 'cloud_unchecked' };
     }
     this.CLOUD.pushInFlight = true;
-    // 记录本次推送是否由本地改动触发（schedulePush 已先置 dirty=true）
-    const wasDirty = this.CLOUD.dirty;
     this._setDirty();
-    // 推送前先静默拉取并双向合并（pull-before-push）：把其他设备新增而本机暂缺的记录/文件并入，
-    // 避免本机不全的整包 PATCH 覆盖云端（曾导致本机缺少的记录被删除）。10 秒内已成功拉取过则跳过。
-    const pulledRecently = this.CLOUD._lastPullOkAt && Date.now() - this.CLOUD._lastPullOkAt < 10000;
-    if (!pulledRecently) {
-      let preCloud = null;
-      try { preCloud = await this.fetchFromCloud(); } catch (e) { preCloud = null; }
-      if (preCloud && preCloud.success && preCloud.hasData && preCloud.data) {
-        try { this._mergeCloudData(preCloud.data, true); } catch (e) {}
-      } else if (!this.CLOUD.everMerged) {
-        // 从未成功合并过云端且这次也拉不到：放弃推送防止覆盖，稍后由轮询/重试补推
-        this.CLOUD.pushInFlight = false;
-        this.CLOUD.syncStatus = 'dirty';
-        this._updateIndicator();
-        this.startRealtimeSync();
-        return { success: false, reason: 'prepull_failed' };
-      }
-      // 拉取失败但历史已合并（弱网）：兜底继续推送本机数据
-    }
-    this.CLOUD.isSyncing = true;
-    this.CLOUD.syncStatus = 'pushing';
-    this._updateIndicator();
+    // 串行推送队列：持锁期间若又有改动（连续上传多个文件/快速连续编辑），schedulePush 会置
+    // pendingPush；本轮 PATCH 完成后用"最新全量数据"重新拉取-合并-推送，直到队列排空，绝不丢更新。
     try {
-      const allData = this._safeCollectAllData();
-      allData.lastModified = new Date().toISOString();
-      this._setLocalModified(allData.lastModified);
-      const body = {
-        files: {
-          'data.json': {
-            content: JSON.stringify(allData, null, 2)
+      let rounds = 0;
+      while (true) {
+        rounds++;
+        this.CLOUD.pendingPush = false;
+        // 推送前先静默拉取并双向合并（pull-before-push）：把其他设备新增而本机暂缺的记录/文件并入，
+        // 避免本机不全的整包 PATCH 覆盖云端（曾导致本机缺少的记录被删除）。
+        // 首轮 10 秒内已成功拉取过可跳过；补推轮（队列里又来新改动）强制重新拉取最新云端。
+        const forcePull = rounds > 1;
+        const pulledRecently = !forcePull && this.CLOUD._lastPullOkAt && Date.now() - this.CLOUD._lastPullOkAt < 10000;
+        if (!pulledRecently) {
+          let preCloud = null;
+          try { preCloud = await this.fetchFromCloud(); } catch (e) { preCloud = null; }
+          if (preCloud && preCloud.success && preCloud.hasData && preCloud.data) {
+            try { this._mergeCloudData(preCloud.data, true); } catch (e) {}
+          } else if (!this.CLOUD.everMerged) {
+            // 从未成功合并过云端且这次也拉不到：放弃推送防止覆盖，稍后由轮询/重试补推
+            this.CLOUD.pushInFlight = false;
+            this.CLOUD.syncStatus = 'dirty';
+            this._updateIndicator();
+            this.startRealtimeSync();
+            return { success: false, reason: 'prepull_failed' };
+          }
+          // 拉取失败但历史已合并（弱网）：兜底继续推送本机数据
+        }
+        this.CLOUD.isSyncing = true;
+        this.CLOUD.syncStatus = 'pushing';
+        this._updateIndicator();
+        const allData = this._safeCollectAllData();
+        allData.lastModified = new Date().toISOString();
+        this._setLocalModified(allData.lastModified);
+        const body = {
+          files: {
+            'data.json': {
+              content: JSON.stringify(allData, null, 2)
+            }
+          }
+        };
+        // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
+        let ok = false, lastErr = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            await this._pushOnce(body);
+            ok = true;
+            break;
+          } catch (e) {
+            lastErr = e;
+            console.warn('云端推送第 ' + (attempt + 1) + ' 次失败:', e);
+            if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
           }
         }
-      };
-      // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
-      let ok = false, lastErr = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          await this._pushOnce(body);
-          ok = true;
-          break;
-        } catch (e) {
-          lastErr = e;
-          console.warn('云端推送第 ' + (attempt + 1) + ' 次失败:', e);
-          if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
-        }
-      }
-      if (ok) {
+        if (!ok) throw lastErr || new Error('push failed');
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
-        this.CLOUD.syncStatus = 'idle';
+        // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
+        if (this.CLOUD.pendingPush && rounds < 6) continue;
         this.CLOUD.isSyncing = false;
         this.CLOUD.pushInFlight = false;
+        this.CLOUD.syncStatus = 'idle';
+        this._updateIndicator();
         this._clearDirty();
         return { success: true };
       }
-      throw lastErr || new Error('push failed');
     } catch (e) {
       console.error('云端推送失败（数据已保存在本机，联网后自动重试）:', e);
       this.CLOUD.syncStatus = 'dirty';
       this.CLOUD.isSyncing = false;
       this.CLOUD.pushInFlight = false;
+      this.CLOUD.pendingPush = true;   // 失败也标记补推，等待轮询/重试
       this._updateIndicator();
       this.startRealtimeSync();
       return { success: false, error: String(e) };
@@ -473,6 +482,12 @@ const Store = {
     if (this.CLOUD.pushTimer) clearTimeout(this.CLOUD.pushTimer);
     // 初始化/云端拉取期间不立即推送：避免用本地数据覆盖云端；但标记 pendingPush，pulling 结束后补推
     if (this.CLOUD.pulling) {
+      this.CLOUD.pendingPush = true;
+      return;
+    }
+    // 推送正在进行（含推送前拉取合并）：标记排队，当前轮 PATCH 完成后会用最新全量数据再推一轮，
+    // 杜绝"连续上传第二个文件/快速连续编辑"因 busy 被丢弃而丢失更新
+    if (this.CLOUD.pushInFlight) {
       this.CLOUD.pendingPush = true;
       return;
     }
@@ -899,7 +914,8 @@ const Store = {
 
   addFile(fileInfo) {
     const files = this.getFiles();
-    fileInfo.id = 'file_' + Date.now();
+    // id 必须带随机后缀：同一毫秒连续上传多个文件时，不能生成相同 id（否则合并去重会丢文件）
+    fileInfo.id = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     fileInfo.createdAt = new Date().toISOString();
     files.unshift(fileInfo);
     if (files.length > 100) {
