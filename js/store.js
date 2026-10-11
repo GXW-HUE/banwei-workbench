@@ -68,12 +68,19 @@ const Store = {
     }
   },
 
-  // ===== 云同步：多通道拉取，收集全部成功结果取 lastModified 最新的（防止代理缓存旧数据） =====
-  async fetchFromCloud() {
+  // ===== 云同步：多通道拉取（两阶段：最快通道先回调渲染，全部完成后取最新校正） =====
+  // onQuick(quickResult)：任一通道最先成功时立即回调（通常1-3秒），用于快速显示
+  async fetchFromCloud(onQuick) {
     if (!this.CLOUD.enabled) return { success: false, reason: 'disabled' };
     // 拉取单例：正在拉取时复用同一个 Promise，避免 init/定时/手动同步并发拉取
-    if (this.CLOUD.pullPromise) return this.CLOUD.pullPromise;
-    this.CLOUD.pullPromise = this._doFetchFromCloud();
+    if (this.CLOUD.pullPromise) {
+      if (typeof onQuick === 'function' && this.CLOUD._lastQuick) {
+        try { onQuick(this.CLOUD._lastQuick); } catch (e) {}
+      }
+      return this.CLOUD.pullPromise;
+    }
+    this.CLOUD._lastQuick = null;
+    this.CLOUD.pullPromise = this._doFetchFromCloud(onQuick);
     try {
       return await this.CLOUD.pullPromise;
     } finally {
@@ -81,20 +88,36 @@ const Store = {
     }
   },
 
-  async _doFetchFromCloud() {
+  async _doFetchFromCloud(onQuick) {
     this.CLOUD.syncStatus = 'pulling';
     this._updateIndicator();
     const channels = this._buildChannels();
     const controllers = channels.map(() => new AbortController());
+    let quickFired = false;
+    const fireQuick = (r) => {
+      if (quickFired || typeof onQuick !== 'function') return;
+      // 仅当快速结果比本地新时才先应用（防止代理缓存旧数据导致回退）
+      const cloudM = r.data && r.data.lastModified ? new Date(r.data.lastModified).getTime() : 0;
+      const localM = this._getLocalModified();
+      const localTotal = this._countRecords(this._collectAllData());
+      const cloudTotal = this._countRecords(r.data);
+      if (this.CLOUD.dirty && localTotal > 0) return;  // 本地有待推送改动，不被快速结果打断
+      if (cloudM > localM || (localM === 0 && cloudTotal > 0)) {
+        quickFired = true;
+        this.CLOUD._lastQuick = r;
+        try { onQuick(r); } catch (e) {}
+      }
+    };
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
-        this._fetchOneChannel(ch, 15000, controllers[i]).then(r => {
-          if (r.success && r.hasData) resolve(r); else reject(new Error('empty'));
+        this._fetchOneChannel(ch, 8000, controllers[i]).then(r => {
+          if (r.success && r.hasData) { fireQuick(r); resolve(r); }
+          else reject(new Error('empty'));
         }, reject);
       };
-      // API 通道延迟 1.5s 发起：代理/raw 通常更快，省 API 限流；但仍会参与最终取最新
-      if (ch.api) setTimeout(start, 1500); else start();
+      // API 通道仅延迟 0.3s（保证认证通道也参与快速返回）
+      if (ch.api) setTimeout(start, 300); else start();
     }));
     try {
       const settled = await Promise.allSettled(tasks);
@@ -159,7 +182,12 @@ const Store = {
       return { success: false, reason: 'pulling' };
     }
     this.CLOUD.pushInFlight = true;
+    // 记录本次推送是否由本地改动触发（schedulePush 已先置 dirty=true）
+    const wasDirty = this.CLOUD.dirty;
     this._setDirty();
+    // 【提速】本地确有改动（删除/上传/编辑）时直接推送，跳过推送前的整轮拉取预检，
+    // 推送从十几秒缩短到 1-3 秒；防覆盖由打开时拉取 + 20 秒轮询 + dirty 保护共同保证。
+    if (!wasDirty) {
     // 冲突检测：推送前先看云端是否被其他设备更新过（多通道拉取，弱网也能成功）
     // 原则：记录数多的为准；数量相同比修改时间；云端拉取失败则拒绝推送防覆盖（稍后自动重试）
     try {
@@ -211,6 +239,7 @@ const Store = {
       }
       // dirty：即使预检异常也继续尝试直推
     }
+    } // end if (!wasDirty)
     this.CLOUD.isSyncing = true;
     this.CLOUD.syncStatus = 'pushing';
     this._updateIndicator();
@@ -344,26 +373,36 @@ const Store = {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) this._foregroundSync();
     });
-    // 定时：有待推送数据每 45s 重试；每 5 分钟自动拉取一次新数据
+    // 窗口重新获得焦点（切回浏览器标签/手机切回 App）：立即拉取
+    window.addEventListener('focus', () => { this._foregroundSync(); });
+    document.addEventListener('resume', () => { this._foregroundSync(); });
+    // 定时：有待推送数据每 20s 重试推送
     setInterval(() => {
       if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
     }, 20000);
+    // 页面开着时每 20s 自动检查其他设备的新数据（接近"立马同步"）
     setInterval(() => {
-      if (!document.hidden && !this.CLOUD.isSyncing) this._foregroundSync();
-    }, 300000);
+      if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
+    }, 20000);
   },
 
   async _foregroundSync() {
     if (this.CLOUD.isSyncing || this.CLOUD.pulling) return;
-    const result = await this.fetchFromCloud();
-    if (result.success && result.hasData && result.data) {
-      const merged = this._mergeCloudData(result.data);
-      if (merged) {
-        if (window.App && window.App.renderModule) {
+    // 最小间隔保护：focus/visibility 事件可能短时间内连续触发
+    const now = Date.now();
+    if (this.CLOUD._lastPullAt && now - this.CLOUD._lastPullAt < 10000) return;
+    this.CLOUD._lastPullAt = now;
+    const applyResult = (result) => {
+      if (result && result.success && result.hasData && result.data) {
+        const merged = this._mergeCloudData(result.data);
+        if (merged && window.App && window.App.renderModule) {
           try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
         }
       }
-    }
+    };
+    // 最快通道先返回先渲染，全部通道完成后再用最新数据校正一次
+    const result = await this.fetchFromCloud((q) => applyResult(q));
+    applyResult(result);
     if (this.CLOUD.dirty) this.pushToCloud();
   },
 
@@ -554,17 +593,20 @@ const Store = {
       localStorage.setItem(this.VERSION_KEY, this.DATA_VERSION);
     }
 
-    // 云端拉取放后台：页面先渲染，数据到位后自动刷新；失败不阻塞、不覆盖
+    // 云端拉取放后台：最快通道先返回先渲染，全部通道完成后再用最新数据校正
     if (this.CLOUD.enabled) {
-      this.fetchFromCloud().then(result => {
-        this.CLOUD.pulling = false;
-        if (result.success && result.hasData && result.data) {
+      const applyInit = (result) => {
+        if (result && result.success && result.hasData && result.data) {
           const applied = this._mergeCloudData(result.data);
-          // 数据到位后刷新当前页面
           if (applied && window.App && window.App.renderModule) {
             try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
           }
-        } else if (!result.success) {
+        }
+      };
+      this.fetchFromCloud((q) => applyInit(q)).then(result => {
+        this.CLOUD.pulling = false;
+        applyInit(result);
+        if (!result.success) {
           this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'error';
           this._updateIndicator();
           if (window.App && window.App.toast) {
