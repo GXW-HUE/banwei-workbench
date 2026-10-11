@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>班委工作台 - Class Committee Workbench</title>
+  <meta name="description" content="班级事务管理：课表、考勤、周分析、月排查、文件中心等一站式工作台">
+  <meta name="theme-color" content="#1e3a8a">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="班委工作台">
+  <link rel="stylesheet" href="css/style.css?v=20261011-2">
+<script src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
+<script>
+(function(){
+  try{
+    var beacon=new BeaconAction({
+      appkey:'0WEB06U85YBSLJNL',
+      versionCode:'1.0.0',
+      channelID:'share',
+      delay:1000,
+      sessionDuration:30*60*1000,
+      isOversea:false,
+      needReportRqdEvent:false
+    });
+    beacon.onDirectUserAction('preview_page_view',{
+      'url':location.href,
+      'referrer':document.referrer,
+      'title':document.title,
+      'sandbox_id':'be1cea26e4824c3489323b07ec956b6d'
+    });
+  }catch(e){}
+})();
+</script></head>
+<body>
+  <div id="app">
+    <!-- ========== Sidebar ========== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">🎓</span>
+          <div class="logo-text">
+            <h1>班委工作台</h1>
+            <p>Class Committee Workbench</p>
+          </div>
+        </div>
+      </div>
+      <nav class="sidebar-nav" id="sidebar-nav">
+        <!-- Navigation items will be rendered by JS -->
+      </nav>
+      <div class="sidebar-footer">
+        <div class="class-info">
+          <span class="class-badge">2025级</span>
+          <span class="class-name" id="class-name-display">机电一体化技术2503班</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== Main Content ========== -->
+    <main class="main-content">
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <button class="sidebar-toggle" id="sidebar-toggle" title="收起/展开侧边栏">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <div>
+            <h2 id="module-title">工作台首页</h2>
+            <span id="module-desc" class="module-desc">欢迎使用班委工作台</span>
+          </div>
+        </div>
+        <div class="top-bar-right">
+          <button class="cloud-sync-btn is-ok" id="cloud-sync-btn" title="云端同步" onclick="App.manualSync()">☁️</button>
+          <div class="date-display" id="current-date"></div>
+        </div>
+      </header>
+
+      <div class="content-area" id="content-area">
+        <!-- Dynamic content rendered here -->
+      </div>
+    </main>
+  </div>
+
+  <!-- ========== Modal ========== -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">标题</h3>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- ========== Confirm Dialog ========== -->
+  <div class="modal-overlay" id="confirm-overlay">
+    <div class="confirm-dialog">
+      <div class="confirm-icon" id="confirm-icon">⚠️</div>
+      <h3 id="confirm-title">确认操作</h3>
+      <p id="confirm-message">确定要执行此操作吗？</p>
+      <div class="confirm-buttons">
+        <button class="btn btn-secondary" id="confirm-cancel">取消</button>
+        <button class="btn btn-danger" id="confirm-ok">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== Toast ========== -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- ========== File Input (hidden) ========== -->
+  <input type="file" id="file-input" accept=".xlsx,.xls,.doc,.docx,.pdf,.ppt,.pptx,.json" style="display:none" multiple>
+
+  <!-- ========== Scripts ========== -->
+  <!-- CDN 库 defer 异步加载：不阻塞页面；本地 JS 同步立即执行，页面秒开 -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+  <script src="js/config.js?v=20261011-2"></script>
+  <script src="js/store.js?v=20261011-2"></script>
+  <script src="js/parse-docx.js?v=20261011-2"></script>
+  <script src="js/exporter.js?v=20261011-2"></script>
+  <script src="js/app.js?v=20261011-2"></script>
+  <script>
+    // PWA Service Worker 注册（手机安装 App / 离线使用）
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+          console.log('SW registered:', reg.scope);
+        }).catch(function (err) {
+          console.warn('SW register failed:', err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>
