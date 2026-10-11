@@ -27,13 +27,24 @@ const Store = {
     dirty: false,          // 本机有改动尚未成功推送
     pendingPush: false,    // pulling 期间收到的推送请求，pulling 结束后补推
     cloudChecked: false,   // 本次运行是否已成功校验过云端（防止首拉未完成时用示例数据污染云端）
-    cloudMerged: false,    // 首次云端数据是否已真正合并进本地（未合并前禁止推送，防止 files 等模块被空数据覆盖）
+    cloudMerged: false,    // 本次运行首次云端数据是否已真正合并进本地（未合并前禁止推送，防止 files 等模块被空数据覆盖）
+    everMerged: false,     // 历史上是否成功合并过云端（持久化，跨 reload；SW 注册触发的 reload 也不丢失"全新设备"判定）
     prePullTotal: -1,      // 首次拉取发起前本地记录数（0=全新设备，>0=老设备，用于区分首拉合并策略）
     initialPulling: true,  // 启动后的首次云端拉取是否仍在进行
     realtimeStarted: false
   },
 
   DIRTY_KEY: 'class_workbench__cloud_dirty',
+  EVER_MERGED_KEY: 'class_workbench__cloud_ever_merged',
+
+  // 标记云端数据已合并（本次运行 + 持久化），之后本地数据才可作为权威推送
+  _markMerged() {
+    this.CLOUD.cloudMerged = true;
+    if (!this.CLOUD.everMerged) {
+      this.CLOUD.everMerged = true;
+      try { localStorage.setItem(this.EVER_MERGED_KEY, '1'); } catch (e) {}
+    }
+  },
 
   // ===== 云同步通道（国内网络多通道，收集全部结果取最新版本，防止代理缓存旧数据） =====
   _buildChannels() {
@@ -444,7 +455,7 @@ const Store = {
     const result = await this.fetchFromCloud((q) => applyResult(q));
     applyResult(result);
     // 云端确认为空（全新班级）或拉取成功：首拉阶段结束，允许后续推送
-    if (result.success && !result.hasData) this.CLOUD.cloudMerged = true;
+    if (result.success && !result.hasData) this._markMerged();
     if (this.CLOUD.dirty) this.pushToCloud();
   },
 
@@ -577,12 +588,12 @@ const Store = {
     // 【绝对保护】本机有尚未成功推送的改动（刚删除/上传/编辑）且本地非空：
     // 绝不用云端覆盖本地——这是删除后重进"记录回弹"的最后防线。
     if (this.CLOUD.dirty && localTotal > 0) {
-      // 全新设备（首拉前本地为空）打开就操作：以云端为基础追加本地新增，
-      // 绝不能用本地不完整数据（如 files 为空）直接覆盖云端
-      if (!this.CLOUD.cloudMerged && this.CLOUD.prePullTotal === 0) {
+      // 从未成功合并过云端（全新设备，含 SW 首次注册触发 reload 的场景）：
+      // 以云端为基础追加本地新增，绝不能用本地不完整数据（如 files 为空）覆盖云端
+      if (!this.CLOUD.everMerged) {
         const merged = this._mergeFirstPull(cloudData);
         this._applyCloudData(merged);
-        this.CLOUD.cloudMerged = true;
+        this._markMerged();
         this.CLOUD.syncStatus = 'dirty';
         this._updateIndicator();
         if (window.App && window.App.renderModule) {
@@ -591,9 +602,8 @@ const Store = {
         this.pushToCloud();
         return true;
       }
-      // 已完成首拉，或老设备（首拉前本地已有完整数据）：直接以本地为准补推，
-      // 推送成功清除 dirty 后才恢复正常云端合并。老设备本地数据完整，允许推送。
-      if (!this.CLOUD.cloudMerged) this.CLOUD.cloudMerged = true;
+      // 老设备（历史已合并过云端）：直接以本地为准补推，本地数据完整，允许推送。
+      this._markMerged();
       this.CLOUD.syncStatus = 'dirty';
       this._updateIndicator();
       this.pushToCloud();
@@ -601,25 +611,25 @@ const Store = {
     }
     if (cloudModified > 0 && (localModified === 0 || (cloudModified >= localModified && cloudTotal >= localTotal))) {
       this._applyCloudData(cloudData);
-      this.CLOUD.cloudMerged = true;
+      this._markMerged();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
     }
     // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
     if (cloudTotal > localTotal && cloudModified > localModified) {
       this._applyCloudData(cloudData);
-      this.CLOUD.cloudMerged = true;
+      this._markMerged();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
     }
     if (cloudModified === 0 && cloudTotal === 0) {
-      this.CLOUD.cloudMerged = true;
+      this._markMerged();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this.pushToCloud();
       return false;
     }
     // 本地更新/更多：保留本地，补推
-    this.CLOUD.cloudMerged = true;
+    this._markMerged();
     this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
     this.pushToCloud();
     return false;
@@ -664,6 +674,7 @@ const Store = {
     const storedVersion = localStorage.getItem(this.VERSION_KEY);
     const needsReload = storedVersion !== this.DATA_VERSION;
     this.CLOUD.pulling = true;
+    this.CLOUD.everMerged = localStorage.getItem(this.EVER_MERGED_KEY) === '1';
 
     if (needsReload) {
       Object.keys(MODULE_CONFIG).forEach(moduleId => {
@@ -705,7 +716,7 @@ const Store = {
         applyInit(result);
         // 云端确认为空（全新班级）：本地数据即为权威，允许首次推送
         if (result.success && !result.hasData) {
-          this.CLOUD.cloudMerged = true;
+          this._markMerged();
         }
         if (!result.success) {
           this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'error';
