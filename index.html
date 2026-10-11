@@ -12,7 +12,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="班委工作台">
-  <link rel="stylesheet" href="css/style.css?v=20261011-3">
+  <link rel="stylesheet" href="css/style.css?v=20261011-4">
 <script src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
 <script>
 (function(){
@@ -36,6 +36,7 @@
 })();
 </script></head>
 <body>
+  <div id="bw-version" style="position:fixed;left:4px;bottom:2px;font-size:10px;color:#b8c4d8;opacity:.65;z-index:1;pointer-events:none;user-select:none;">v20261011-4</div>
   <div id="app">
     <!-- ========== Sidebar ========== -->
     <aside class="sidebar" id="sidebar">
@@ -124,20 +125,44 @@
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
-  <script src="js/config.js?v=20261011-3"></script>
-  <script src="js/store.js?v=20261011-3"></script>
-  <script src="js/parse-docx.js?v=20261011-3"></script>
-  <script src="js/exporter.js?v=20261011-3"></script>
-  <script src="js/app.js?v=20261011-3"></script>
+  <script src="js/config.js?v=20261011-4"></script>
+  <script src="js/store.js?v=20261011-4"></script>
+  <script src="js/parse-docx.js?v=20261011-4"></script>
+  <script src="js/exporter.js?v=20261011-4"></script>
+  <script src="js/app.js?v=20261011-4"></script>
   <script>
-    // PWA Service Worker 注册（手机安装 App / 离线使用）
+    // PWA Service Worker 注册（手机安装 App / 离线使用）+ 发现新版本自动刷新
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
         navigator.serviceWorker.register('sw.js').then(function (reg) {
           console.log('SW registered:', reg.scope);
+          // 每次打开主动检查新版本（绕过 sw.js 的 10 分钟 HTTP 缓存窗口）
+          try { reg.update(); } catch (e) {}
+          // 新 SW 安装完成（sw.js 内 skipWaiting 会立即激活）
+          reg.addEventListener('updatefound', function () {
+            var nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', function () {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('发现新版本，即将自动刷新');
+              }
+            });
+          });
         }).catch(function (err) {
           console.warn('SW register failed:', err);
         });
+        // 新 SW 接管页面 → 自动刷新一次，确保所有设备立刻跑新代码
+        var __refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (__refreshing) return;
+          __refreshing = true;
+          try { sessionStorage.setItem('bw_updated', '1'); } catch (e) {}
+          location.reload();
+        });
+        // 每 10 分钟再检查一次更新（页面长期挂着也能更新）
+        setInterval(function () {
+          navigator.serviceWorker.getRegistration().then(function (r) { if (r) r.update(); }).catch(function () {});
+        }, 600000);
       });
     }
   </script>

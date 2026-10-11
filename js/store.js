@@ -1,4 +1,4 @@
-﻿/* ============================================
+/* ============================================
    班委工作台 - 数据存储管理 (localStorage + GitHub Gist 云同步)
    ============================================ */
 
@@ -16,10 +16,12 @@ const Store = {
     owner: 'GXW-HUE',
     token: 'ghp_' + 'gJY33bsG' + 'hCzC4S4Bl' + 'KHkMdpQHo' + 'Jh742s7Gf5',
     apiBase: 'https://api.github.com/gists/',
-    debounceMs: 3000,      // 修改后防抖推送间隔
+    debounceMs: 800,       // 修改后防抖推送间隔（快速推送，防退出丢失）
     lastPushTime: 0,
     pushTimer: null,
     isSyncing: false,
+    pushInFlight: false,   // 推送全局锁（覆盖冲突检测窗口，防并发推送互相覆盖）
+    pullPromise: null,     // 拉取单例（pulling 期间复用，防并发拉取）
     lastSyncTime: null,
     syncStatus: 'idle',    // idle | pulling | pushing | dirty | error
     dirty: false,          // 本机有改动尚未成功推送
@@ -69,6 +71,17 @@ const Store = {
   // ===== 云同步：多通道拉取，收集全部成功结果取 lastModified 最新的（防止代理缓存旧数据） =====
   async fetchFromCloud() {
     if (!this.CLOUD.enabled) return { success: false, reason: 'disabled' };
+    // 拉取单例：正在拉取时复用同一个 Promise，避免 init/定时/手动同步并发拉取
+    if (this.CLOUD.pullPromise) return this.CLOUD.pullPromise;
+    this.CLOUD.pullPromise = this._doFetchFromCloud();
+    try {
+      return await this.CLOUD.pullPromise;
+    } finally {
+      this.CLOUD.pullPromise = null;
+    }
+  },
+
+  async _doFetchFromCloud() {
     this.CLOUD.syncStatus = 'pulling';
     this._updateIndicator();
     const channels = this._buildChannels();
@@ -137,17 +150,19 @@ const Store = {
 
   async pushToCloud() {
     if (!this.CLOUD.enabled) return { success: false };
-    if (this.CLOUD.isSyncing) return { success: false, reason: 'busy' };
+    // 全局推送锁：冲突检测（含一次拉取 await）期间也加锁，杜绝多个推送并发 PATCH 互相覆盖
+    if (this.CLOUD.pushInFlight || this.CLOUD.isSyncing) return { success: false, reason: 'busy' };
     // 正在拉取云端数据时禁止推送：等拉取完成后自动补推（防止用本地示例数据覆盖云端）
     if (this.CLOUD.pulling) {
       this.CLOUD.pendingPush = true;
       this._setDirty();
       return { success: false, reason: 'pulling' };
     }
+    this.CLOUD.pushInFlight = true;
     this._setDirty();
     // 冲突检测：推送前先看云端是否被其他设备更新过（多通道拉取，弱网也能成功）
     // 原则：记录数多的为准；数量相同比修改时间；云端拉取失败则拒绝推送防覆盖（稍后自动重试）
-    if (!this.CLOUD.pulling) {
+    try {
       let cloud = null;
       try {
         cloud = await this.fetchFromCloud();
@@ -157,26 +172,44 @@ const Store = {
         const localModified = this._getLocalModified();
         const cloudTotal = this._countRecords(cloud.data);
         const localTotal = this._countRecords(this._collectAllData());
-        const shouldPull = (cloudModified > 0 && localModified === 0) ||
-                           // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
-                           (cloudTotal > localTotal && cloudModified > localModified) ||
-                           // 本地有未上传修改时，记录数相同绝不被云端覆盖（防止丢失用户刚上传的数据）
-                           (!this.CLOUD.dirty && cloudTotal === localTotal && cloudModified > localModified);
+        // dirty=true：本机有未推送改动（删除/上传/编辑），一律本地优先，绝不用云端覆盖
+        // dirty=false 且云端更新时才接受云端（全新设备/云端被其他设备更新）
+        const shouldPull = !this.CLOUD.dirty && (
+          (cloudModified > 0 && localModified === 0) ||
+          (cloudTotal > localTotal && cloudModified > localModified) ||
+          (cloudTotal === localTotal && cloudModified > localModified)
+        );
         if (shouldPull) {
           this._applyCloudData(cloud.data);
           this._setLocalModified(cloud.data.lastModified);
+          // 云端已是最新且本地无改动：无需再推送
+          this.CLOUD.pushInFlight = false;
+          this._clearDirty();
+          this.CLOUD.syncStatus = 'idle';
+          this._updateIndicator();
+          return { success: true, reason: 'cloud_newer' };
         }
-        // 否则保留本地（本地更新/记录更多），推送时自然带上本地数据
+        // 否则保留本地（本地更新/dirty），继续推送本地数据
       } else if (cloud && cloud.success && cloud.hasData === false) {
         // 云端还没有数据：允许推送（首次建立）
-      } else {
-        // 云端拉取失败：拒绝推送，避免本地数据覆盖云端；保持 dirty，网络恢复后自动重试
+      } else if (!this.CLOUD.dirty) {
+        // 非 dirty 且云端拉取失败：拒绝推送，避免覆盖云端
         console.warn('云端拉取失败，取消推送（防止覆盖云端数据），将自动重试');
+        this.CLOUD.pushInFlight = false;
         this.CLOUD.syncStatus = 'dirty';
         this._updateIndicator();
         this.startRealtimeSync();
         return { success: false, reason: 'pull_failed' };
       }
+      // dirty 且拉取失败：仍尝试直推（弱网下多通道拉取失败但 api 直连 PATCH 可能成功）
+    } catch (preErr) {
+      if (!this.CLOUD.dirty) {
+        this.CLOUD.pushInFlight = false;
+        this.CLOUD.syncStatus = 'dirty';
+        this._updateIndicator();
+        return { success: false, reason: 'precheck_error', error: String(preErr) };
+      }
+      // dirty：即使预检异常也继续尝试直推
     }
     this.CLOUD.isSyncing = true;
     this.CLOUD.syncStatus = 'pushing';
@@ -192,9 +225,9 @@ const Store = {
           }
         }
       };
-      // 弱网重试 3 次（间隔 2s / 4s / 8s）
+      // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
       let ok = false, lastErr = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         try {
           await this._pushOnce(body);
           ok = true;
@@ -202,7 +235,7 @@ const Store = {
         } catch (e) {
           lastErr = e;
           console.warn('云端推送第 ' + (attempt + 1) + ' 次失败:', e);
-          if (attempt < 2) await this._sleep(2000 * Math.pow(2, attempt));
+          if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
         }
       }
       if (ok) {
@@ -210,6 +243,7 @@ const Store = {
         this.CLOUD.lastSyncTime = new Date().toISOString();
         this.CLOUD.syncStatus = 'idle';
         this.CLOUD.isSyncing = false;
+        this.CLOUD.pushInFlight = false;
         this._clearDirty();
         return { success: true };
       }
@@ -218,10 +252,38 @@ const Store = {
       console.error('云端推送失败（数据已保存在本机，联网后自动重试）:', e);
       this.CLOUD.syncStatus = 'dirty';
       this.CLOUD.isSyncing = false;
+      this.CLOUD.pushInFlight = false;
       this._updateIndicator();
       this.startRealtimeSync();
       return { success: false, error: String(e) };
     }
+  },
+
+  // ===== 退出/切后台前的最后一次推送（keepalive，页面卸载也能发出请求） =====
+  // 跳过冲突检测（dirty 本地优先），直接把本地全量数据 PATCH 到云端
+  flushBeforeHide() {
+    if (!this.CLOUD.enabled || !this.CLOUD.dirty) return;
+    if (this.CLOUD.isSyncing || this.CLOUD.pushInFlight) return;
+    try {
+      const allData = this._safeCollectAllData();
+      allData.lastModified = new Date().toISOString();
+      this._setLocalModified(allData.lastModified);
+      const body = JSON.stringify({ files: { 'data.json': { content: JSON.stringify(allData, null, 2) } } });
+      // keepalive：页面关闭/切后台后请求仍会继续完成
+      fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
+        method: 'PATCH',
+        keepalive: true,
+        headers: {
+          'Authorization': 'Bearer ' + this.CLOUD.token,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'banwei-workbench'
+        },
+        body: body
+      }).then(r => {
+        if (r.ok) { this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
+      }).catch(() => {});
+    } catch (e) {}
   },
 
   // ===== 待同步标记（持久化，防止退出前未推送成功导致丢失） =====
@@ -259,13 +321,19 @@ const Store = {
   startRealtimeSync() {
     if (this.CLOUD.realtimeStarted || typeof window === 'undefined') return;
     this.CLOUD.realtimeStarted = true;
-    // 上次退出前有未完成的推送：启动后补推
+    // 上次退出前有未完成的推送：启动后立即补推
     try {
       if (localStorage.getItem(this.DIRTY_KEY)) {
         this.CLOUD.dirty = true;
-        setTimeout(() => { if (!this.CLOUD.isSyncing) this.syncNow(); }, 3000);
+        setTimeout(() => { if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this.pushToCloud(); }, 1200);
       }
     } catch (e) {}
+    // 切后台/关闭页面/刷新前：立即做最后一次推送（keepalive 保证请求完成）
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.flushBeforeHide();
+    });
+    window.addEventListener('pagehide', () => { this.flushBeforeHide(); });
+    window.addEventListener('beforeunload', () => { this.flushBeforeHide(); });
     // 网络恢复：立即同步
     window.addEventListener('online', () => {
       console.log('网络已恢复，自动同步');
@@ -278,8 +346,8 @@ const Store = {
     });
     // 定时：有待推送数据每 45s 重试；每 5 分钟自动拉取一次新数据
     setInterval(() => {
-      if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !document.hidden) this.syncNow();
-    }, 45000);
+      if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
+    }, 20000);
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing) this._foregroundSync();
     }, 300000);
@@ -415,6 +483,15 @@ const Store = {
     const localModified = this._getLocalModified();
     const cloudTotal = this._countRecords(cloudData);
     const localTotal = this._countRecords(this._collectAllData());
+    // 【绝对保护】本机有尚未成功推送的改动（刚删除/上传/编辑）且本地非空：
+    // 绝不用云端覆盖本地——这是删除后重进"记录回弹"的最后防线。
+    // 直接以本地为准补推，推送成功清除 dirty 后才会恢复正常云端合并。
+    if (this.CLOUD.dirty && localTotal > 0) {
+      this.CLOUD.syncStatus = 'dirty';
+      this._updateIndicator();
+      this.pushToCloud();
+      return false;
+    }
     if (cloudModified > 0 && (localModified === 0 || (cloudModified >= localModified && cloudTotal >= localTotal))) {
       this._applyCloudData(cloudData);
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
