@@ -27,6 +27,8 @@ const Store = {
     dirty: false,          // 本机有改动尚未成功推送
     pendingPush: false,    // pulling 期间收到的推送请求，pulling 结束后补推
     cloudChecked: false,   // 本次运行是否已成功校验过云端（防止首拉未完成时用示例数据污染云端）
+    cloudMerged: false,    // 首次云端数据是否已真正合并进本地（未合并前禁止推送，防止 files 等模块被空数据覆盖）
+    prePullTotal: -1,      // 首次拉取发起前本地记录数（0=全新设备，>0=老设备，用于区分首拉合并策略）
     initialPulling: true,  // 启动后的首次云端拉取是否仍在进行
     realtimeStarted: false
   },
@@ -196,8 +198,8 @@ const Store = {
       this._setDirty();
       return { success: false, reason: 'pulling' };
     }
-    // 首次云端校验未完成前禁止推送：防止全新设备/弱网首拉失败时把内置示例数据推上云端
-    if (!this.CLOUD.cloudChecked) {
+    // 首次云端数据合并完成前禁止推送：防止全新设备/弱网首拉未完成时用不完整本地数据（如空 files）覆盖云端
+    if (!this.CLOUD.cloudMerged) {
       this.CLOUD.pendingPush = true;
       this._setDirty();
       if (!this.CLOUD.pullPromise) {
@@ -317,8 +319,8 @@ const Store = {
   flushBeforeHide() {
     if (!this.CLOUD.enabled || !this.CLOUD.dirty) return;
     if (this.CLOUD.isSyncing || this.CLOUD.pushInFlight) return;
-    // 未完成首次云端校验前不直推（防止全新设备把内置示例数据在关闭瞬间推上云端）
-    if (!this.CLOUD.cloudChecked) return;
+    // 未完成首次云端数据合并前不直推（防止全新设备把不完整数据在关闭瞬间推上云端）
+    if (!this.CLOUD.cloudMerged) return;
     try {
       const allData = this._safeCollectAllData();
       allData.lastModified = new Date().toISOString();
@@ -414,7 +416,7 @@ const Store = {
 
   // 拉取完成后：若有待推送的改动，补推一次
   _afterPullMaybePush() {
-    if (this.CLOUD.cloudChecked && (this.CLOUD.pendingPush || this.CLOUD.dirty)) {
+    if (this.CLOUD.cloudMerged && (this.CLOUD.pendingPush || this.CLOUD.dirty)) {
       this.CLOUD.pendingPush = false;
       setTimeout(() => {
         if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !this.CLOUD.pulling) this.pushToCloud();
@@ -441,6 +443,8 @@ const Store = {
     // 最快通道先返回先渲染，全部通道完成后再用最新数据校正一次
     const result = await this.fetchFromCloud((q) => applyResult(q));
     applyResult(result);
+    // 云端确认为空（全新班级）或拉取成功：首拉阶段结束，允许后续推送
+    if (result.success && !result.hasData) this.CLOUD.cloudMerged = true;
     if (this.CLOUD.dirty) this.pushToCloud();
   },
 
@@ -572,8 +576,24 @@ const Store = {
     const localTotal = this._countRecords(this._collectAllData());
     // 【绝对保护】本机有尚未成功推送的改动（刚删除/上传/编辑）且本地非空：
     // 绝不用云端覆盖本地——这是删除后重进"记录回弹"的最后防线。
-    // 直接以本地为准补推，推送成功清除 dirty 后才会恢复正常云端合并。
     if (this.CLOUD.dirty && localTotal > 0) {
+      // 全新设备（首拉前本地为空）打开就操作：以云端为基础追加本地新增，
+      // 绝不能用本地不完整数据（如 files 为空）直接覆盖云端
+      if (!this.CLOUD.cloudMerged && this.CLOUD.prePullTotal === 0) {
+        const merged = this._mergeFirstPull(cloudData);
+        this._applyCloudData(merged);
+        this.CLOUD.cloudMerged = true;
+        this.CLOUD.syncStatus = 'dirty';
+        this._updateIndicator();
+        if (window.App && window.App.renderModule) {
+          try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
+        }
+        this.pushToCloud();
+        return true;
+      }
+      // 已完成首拉，或老设备（首拉前本地已有完整数据）：直接以本地为准补推，
+      // 推送成功清除 dirty 后才恢复正常云端合并。老设备本地数据完整，允许推送。
+      if (!this.CLOUD.cloudMerged) this.CLOUD.cloudMerged = true;
       this.CLOUD.syncStatus = 'dirty';
       this._updateIndicator();
       this.pushToCloud();
@@ -581,24 +601,51 @@ const Store = {
     }
     if (cloudModified > 0 && (localModified === 0 || (cloudModified >= localModified && cloudTotal >= localTotal))) {
       this._applyCloudData(cloudData);
+      this.CLOUD.cloudMerged = true;
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
     }
     // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
     if (cloudTotal > localTotal && cloudModified > localModified) {
       this._applyCloudData(cloudData);
+      this.CLOUD.cloudMerged = true;
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
     }
     if (cloudModified === 0 && cloudTotal === 0) {
+      this.CLOUD.cloudMerged = true;
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this.pushToCloud();
       return false;
     }
     // 本地更新/更多：保留本地，补推
+    this.CLOUD.cloudMerged = true;
     this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
     this.pushToCloud();
     return false;
+  },
+
+  // ===== 首拉合并：全新设备首拉未完成时本地已有改动，
+  // 以云端为基础、按 id 追加本地新增记录/文件（课表等单对象以云端为准） =====
+  _mergeFirstPull(cloudData) {
+    const out = Object.assign({}, cloudData);
+    Object.keys(MODULE_CONFIG).forEach(moduleId => {
+      if (MODULE_CONFIG[moduleId].type === 'schedule') {
+        out[moduleId] = (cloudData[moduleId] && typeof cloudData[moduleId] === 'object')
+          ? cloudData[moduleId] : this.getSchedule();
+      } else {
+        const cloudArr = Array.isArray(cloudData[moduleId]) ? cloudData[moduleId] : [];
+        const localArr = Array.isArray(this.get(moduleId)) ? this.get(moduleId) : [];
+        const ids = new Set(cloudArr.map(r => r && r.id));
+        out[moduleId] = cloudArr.concat(localArr.filter(r => r && r.id && !ids.has(r.id)));
+      }
+    });
+    const cf = Array.isArray(cloudData._files) ? cloudData._files : [];
+    const lf = Array.isArray(this.getFiles()) ? this.getFiles() : [];
+    const fids = new Set(cf.map(f => f && f.id));
+    out._files = cf.concat(lf.filter(f => f && f.id && !fids.has(f.id)));
+    if (!out.lastModified) out.lastModified = new Date().toISOString();
+    return out;
   },
 
   // ===== 手动同步（拉取云端 → 合并到本地 → 推送） =====
@@ -643,6 +690,8 @@ const Store = {
 
     // 云端拉取放后台：最快通道先返回先渲染，全部通道完成后再用最新数据校正
     if (this.CLOUD.enabled) {
+      // 记录首拉前本地数据量：0=全新设备（首拉合并以云端为基础追加新增）；>0=老设备（本地为准防删除回弹）
+      this.CLOUD.prePullTotal = this._countRecords(this._collectAllData());
       const applyInit = (result) => {
         if (result && result.success && result.hasData && result.data) {
           const applied = this._mergeCloudData(result.data);
@@ -654,6 +703,10 @@ const Store = {
       this.fetchFromCloud((q) => applyInit(q)).then(result => {
         this.CLOUD.pulling = false;
         applyInit(result);
+        // 云端确认为空（全新班级）：本地数据即为权威，允许首次推送
+        if (result.success && !result.hasData) {
+          this.CLOUD.cloudMerged = true;
+        }
         if (!result.success) {
           this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'error';
           this._updateIndicator();
