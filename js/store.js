@@ -36,6 +36,9 @@ const Store = {
 
   DIRTY_KEY: 'class_workbench__cloud_dirty',
   EVER_MERGED_KEY: 'class_workbench__cloud_ever_merged',
+  TOMB_KEY: 'class_workbench__tombstones',   // 删除墓碑 {bucket: {id: 删除时间戳ms}}
+  SYNC_KEY: 'class_workbench__last_sync',    // 上次成功合并云端的时间戳ms
+  TOMB_TTL: 30 * 24 * 3600 * 1000,           // 墓碑保留30天
 
   // 标记云端数据已合并（本次运行 + 持久化），之后本地数据才可作为权威推送
   _markMerged() {
@@ -44,6 +47,30 @@ const Store = {
       this.CLOUD.everMerged = true;
       try { localStorage.setItem(this.EVER_MERGED_KEY, '1'); } catch (e) {}
     }
+  },
+
+  // ===== 删除墓碑（让"删除"能跨设备同步） =====
+  _getTombs() {
+    try { const t = JSON.parse(localStorage.getItem(this.TOMB_KEY) || '{}'); return (t && typeof t === 'object') ? t : {}; }
+    catch (e) { return {}; }
+  },
+  _setTombs(t) { try { localStorage.setItem(this.TOMB_KEY, JSON.stringify(t || {})); } catch (e) {} },
+  _addTomb(bucket, id) {
+    if (!id) return;
+    const t = this._getTombs();
+    t[bucket] = t[bucket] || {};
+    t[bucket][id] = Date.now();
+    this._pruneTombs(t);
+    this._setTombs(t);
+  },
+  _pruneTombs(t) {
+    if (!t || typeof t !== 'object') return;
+    const cutoff = Date.now() - this.TOMB_TTL;
+    Object.keys(t).forEach(b => {
+      if (!t[b] || typeof t[b] !== 'object') { delete t[b]; return; }
+      Object.keys(t[b]).forEach(id => { if (!t[b][id] || t[b][id] < cutoff) delete t[b][id]; });
+      if (Object.keys(t[b]).length === 0) delete t[b];
+    });
   },
 
   // ===== 云同步通道（国内网络多通道，收集全部结果取最新版本，防止代理缓存旧数据） =====
@@ -154,6 +181,7 @@ const Store = {
       // 至少一个通道成功响应（无论云端有无数据），即视为已完成云端校验
       this.CLOUD.cloudChecked = true;
       this.CLOUD.initialPulling = false;
+      this.CLOUD._lastPullOkAt = Date.now();
       // 从"有数据"的成功结果中取 lastModified 最新的（防止代理缓存旧数据）
       const withData = successes.filter(r => r.hasData && r.data);
       withData.sort((a, b) => {
@@ -222,61 +250,24 @@ const Store = {
     // 记录本次推送是否由本地改动触发（schedulePush 已先置 dirty=true）
     const wasDirty = this.CLOUD.dirty;
     this._setDirty();
-    // 【提速】本地确有改动（删除/上传/编辑）时直接推送，跳过推送前的整轮拉取预检，
-    // 推送从十几秒缩短到 1-3 秒；防覆盖由打开时拉取 + 20 秒轮询 + dirty 保护共同保证。
-    if (!wasDirty) {
-    // 冲突检测：推送前先看云端是否被其他设备更新过（多通道拉取，弱网也能成功）
-    // 原则：记录数多的为准；数量相同比修改时间；云端拉取失败则拒绝推送防覆盖（稍后自动重试）
-    try {
-      let cloud = null;
-      try {
-        cloud = await this.fetchFromCloud();
-      } catch (e) {}
-      if (cloud && cloud.success && cloud.data) {
-        const cloudModified = cloud.data.lastModified ? new Date(cloud.data.lastModified).getTime() : 0;
-        const localModified = this._getLocalModified();
-        const cloudTotal = this._countRecords(cloud.data);
-        const localTotal = this._countRecords(this._collectAllData());
-        // dirty=true：本机有未推送改动（删除/上传/编辑），一律本地优先，绝不用云端覆盖
-        // dirty=false 且云端更新时才接受云端（全新设备/云端被其他设备更新）
-        const shouldPull = !this.CLOUD.dirty && (
-          (cloudModified > 0 && localModified === 0) ||
-          (cloudTotal > localTotal && cloudModified > localModified) ||
-          (cloudTotal === localTotal && cloudModified > localModified)
-        );
-        if (shouldPull) {
-          this._applyCloudData(cloud.data);
-          this._setLocalModified(cloud.data.lastModified);
-          // 云端已是最新且本地无改动：无需再推送
-          this.CLOUD.pushInFlight = false;
-          this._clearDirty();
-          this.CLOUD.syncStatus = 'idle';
-          this._updateIndicator();
-          return { success: true, reason: 'cloud_newer' };
-        }
-        // 否则保留本地（本地更新/dirty），继续推送本地数据
-      } else if (cloud && cloud.success && cloud.hasData === false) {
-        // 云端还没有数据：允许推送（首次建立）
-      } else if (!this.CLOUD.dirty) {
-        // 非 dirty 且云端拉取失败：拒绝推送，避免覆盖云端
-        console.warn('云端拉取失败，取消推送（防止覆盖云端数据），将自动重试');
+    // 推送前先静默拉取并双向合并（pull-before-push）：把其他设备新增而本机暂缺的记录/文件并入，
+    // 避免本机不全的整包 PATCH 覆盖云端（曾导致本机缺少的记录被删除）。10 秒内已成功拉取过则跳过。
+    const pulledRecently = this.CLOUD._lastPullOkAt && Date.now() - this.CLOUD._lastPullOkAt < 10000;
+    if (!pulledRecently) {
+      let preCloud = null;
+      try { preCloud = await this.fetchFromCloud(); } catch (e) { preCloud = null; }
+      if (preCloud && preCloud.success && preCloud.hasData && preCloud.data) {
+        try { this._mergeCloudData(preCloud.data, true); } catch (e) {}
+      } else if (!this.CLOUD.everMerged) {
+        // 从未成功合并过云端且这次也拉不到：放弃推送防止覆盖，稍后由轮询/重试补推
         this.CLOUD.pushInFlight = false;
         this.CLOUD.syncStatus = 'dirty';
         this._updateIndicator();
         this.startRealtimeSync();
-        return { success: false, reason: 'pull_failed' };
+        return { success: false, reason: 'prepull_failed' };
       }
-      // dirty 且拉取失败：仍尝试直推（弱网下多通道拉取失败但 api 直连 PATCH 可能成功）
-    } catch (preErr) {
-      if (!this.CLOUD.dirty) {
-        this.CLOUD.pushInFlight = false;
-        this.CLOUD.syncStatus = 'dirty';
-        this._updateIndicator();
-        return { success: false, reason: 'precheck_error', error: String(preErr) };
-      }
-      // dirty：即使预检异常也继续尝试直推
+      // 拉取失败但历史已合并（弱网）：兜底继续推送本机数据
     }
-    } // end if (!wasDirty)
     this.CLOUD.isSyncing = true;
     this.CLOUD.syncStatus = 'pushing';
     this._updateIndicator();
@@ -436,9 +427,8 @@ const Store = {
   },
 
   async _foregroundSync() {
-    if (this.CLOUD.isSyncing || this.CLOUD.pulling) return;
-    // 本地有待推送改动时跳过定时/焦点拉取，避免拉取占用通道阻塞推送（推送队列自行处理）
-    if (this.CLOUD.dirty) return;
+    if (this.CLOUD.isSyncing || this.CLOUD.pulling || this.CLOUD.pushInFlight) return;
+    // 即使本地有待推送改动也照常拉取：双向合并会保留本地改动、同时同步其他设备的增删，合并后再补推
     // 最小间隔保护：focus/visibility 事件可能短时间内连续触发
     const now = Date.now();
     if (this.CLOUD._lastPullAt && now - this.CLOUD._lastPullAt < 10000) return;
@@ -502,6 +492,7 @@ const Store = {
       }
     });
     data._files = Array.isArray(this.getFiles()) ? this.getFiles() : [];
+    data._deleted = this._getTombs();
     return data;
   },
 
@@ -572,90 +563,124 @@ const Store = {
       });
       localStorage.setItem(this.FILE_PREFIX, JSON.stringify(protectedFiles));
     }
+    // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
+    if (cloudData._deleted && typeof cloudData._deleted === 'object') {
+      const mergedTombs = {};
+      const addSrc = (src) => {
+        if (!src || typeof src !== 'object') return;
+        Object.keys(src).forEach(b => {
+          if (!src[b] || typeof src[b] !== 'object') return;
+          mergedTombs[b] = mergedTombs[b] || {};
+          Object.keys(src[b]).forEach(id => {
+            const v = Number(src[b][id]) || 0;
+            if (!mergedTombs[b][id] || v > mergedTombs[b][id]) mergedTombs[b][id] = v;
+          });
+        });
+      };
+      addSrc(this._getTombs());
+      addSrc(cloudData._deleted);
+      this._pruneTombs(mergedTombs);
+      this._setTombs(mergedTombs);
+    }
     // 记录云端最后修改时间，供冲突检测使用
     if (cloudData.lastModified) {
       this._setLocalModified(cloudData.lastModified);
     }
   },
 
-  // ===== 云端数据合并决策：返回 true 表示采用了云端数据 =====
-  _mergeCloudData(cloudData) {
+  // ===== 云端数据双向合并（按记录 ID + 删除墓碑 + 时间戳） =====
+  // 统一处理：跨设备新增/删除同步、离线改动保护、全新设备首拉；返回 true 表示已合并并写入本地
+  _mergeCloudData(cloudData, silent) {
     if (!cloudData || typeof cloudData !== 'object') return false;
-    const cloudModified = cloudData.lastModified ? new Date(cloudData.lastModified).getTime() : 0;
-    const localModified = this._getLocalModified();
-    const cloudTotal = this._countRecords(cloudData);
-    const localTotal = this._countRecords(this._collectAllData());
-    // 【绝对保护】本机有尚未成功推送的改动（刚删除/上传/编辑）且本地非空：
-    // 绝不用云端覆盖本地——这是删除后重进"记录回弹"的最后防线。
-    if (this.CLOUD.dirty && localTotal > 0) {
-      // 从未成功合并过云端（全新设备，含 SW 首次注册触发 reload 的场景）：
-      // 以云端为基础追加本地新增，绝不能用本地不完整数据（如 files 为空）覆盖云端
-      if (!this.CLOUD.everMerged) {
-        const merged = this._mergeFirstPull(cloudData);
-        this._applyCloudData(merged);
-        this._markMerged();
-        this.CLOUD.syncStatus = 'dirty';
-        this._updateIndicator();
-        if (window.App && window.App.renderModule) {
-          try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
-        }
-        this.pushToCloud();
-        return true;
-      }
-      // 老设备（历史已合并过云端）：直接以本地为准补推，本地数据完整，允许推送。
-      this._markMerged();
-      this.CLOUD.syncStatus = 'dirty';
-      this._updateIndicator();
-      this.pushToCloud();
-      return false;
-    }
-    if (cloudModified > 0 && (localModified === 0 || (cloudModified >= localModified && cloudTotal >= localTotal))) {
-      this._applyCloudData(cloudData);
-      this._markMerged();
-      this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
-      return true;
-    }
-    // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
-    if (cloudTotal > localTotal && cloudModified > localModified) {
-      this._applyCloudData(cloudData);
-      this._markMerged();
-      this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
-      return true;
-    }
-    if (cloudModified === 0 && cloudTotal === 0) {
-      this._markMerged();
-      this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
-      this.pushToCloud();
-      return false;
-    }
-    // 本地更新/更多：保留本地，补推
-    this._markMerged();
-    this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
-    this.pushToCloud();
-    return false;
-  },
+    const cloudTs = cloudData.lastModified ? Date.parse(cloudData.lastModified) : 0;
+    const localTs = this._getLocalModified();
+    const localData = this._collectAllData();
 
-  // ===== 首拉合并：全新设备首拉未完成时本地已有改动，
-  // 以云端为基础、按 id 追加本地新增记录/文件（课表等单对象以云端为准） =====
-  _mergeFirstPull(cloudData) {
-    const out = Object.assign({}, cloudData);
-    Object.keys(MODULE_CONFIG).forEach(moduleId => {
-      if (MODULE_CONFIG[moduleId].type === 'schedule') {
-        out[moduleId] = (cloudData[moduleId] && typeof cloudData[moduleId] === 'object')
-          ? cloudData[moduleId] : this.getSchedule();
-      } else {
-        const cloudArr = Array.isArray(cloudData[moduleId]) ? cloudData[moduleId] : [];
-        const localArr = Array.isArray(this.get(moduleId)) ? this.get(moduleId) : [];
-        const ids = new Set(cloudArr.map(r => r && r.id));
-        out[moduleId] = cloudArr.concat(localArr.filter(r => r && r.id && !ids.has(r.id)));
-      }
+    // 1) 删除墓碑 union（本地 ∪ 云端），同 id 取较新时间戳
+    const tombs = {};
+    const addTombSrc = (src) => {
+      if (!src || typeof src !== 'object') return;
+      Object.keys(src).forEach(b => {
+        if (!src[b] || typeof src[b] !== 'object') return;
+        tombs[b] = tombs[b] || {};
+        Object.keys(src[b]).forEach(id => {
+          const v = Number(src[b][id]) || 0;
+          if (!tombs[b][id] || v > tombs[b][id]) tombs[b][id] = v;
+        });
+      });
+    };
+    addTombSrc(localData._deleted);
+    addTombSrc(cloudData._deleted);
+    this._pruneTombs(tombs);
+
+    const lastSync = Number(localStorage.getItem(this.SYNC_KEY) || 0);
+    const localAhead = localTs > cloudTs;   // 本地整体更新（典型离线改动）
+    const out = { version: this.DATA_VERSION };
+    let localHasExtra = false;
+
+    // 2) 单模块按 ID 合并
+    const mergeArr = (bucket, cloudArr, localArr) => {
+      const c = Array.isArray(cloudArr) ? cloudArr : [];
+      const l = Array.isArray(localArr) ? localArr : [];
+      const tb = tombs[bucket] || {};
+      const map = new Map();
+      c.forEach(r => { if (r && r.id && !tb[r.id]) map.set(r.id, r); });  // 云端先行，剔除已删
+      l.forEach(r => {
+        if (!r || !r.id || tb[r.id]) return;                               // 墓碑中的直接删除
+        if (map.has(r.id)) {
+          const ex = map.get(r.id);
+          const rt = Date.parse(r.updatedAt || r.createdAt || 0);
+          const et = Date.parse(ex.updatedAt || ex.createdAt || 0);
+          if (rt > et) map.set(r.id, r);                                  // 同 ID 取更新时间晚的
+        } else {
+          const created = Date.parse(r.createdAt || r.updatedAt || 0);
+          // 本地离线新增（晚于上次同步）或本地整体领先 → 保留待推送；
+          // 否则视为其他设备已删除的旧记录，丢弃（实现跨设备删除同步）
+          if ((created > 0 && created > lastSync) || localAhead) { map.set(r.id, r); localHasExtra = true; }
+        }
+      });
+      return Array.from(map.values());
+    };
+
+    Object.keys(MODULE_CONFIG).forEach(m => {
+      if (MODULE_CONFIG[m].type === 'schedule') return;
+      out[m] = mergeArr(m, cloudData[m], localData[m]);
     });
-    const cf = Array.isArray(cloudData._files) ? cloudData._files : [];
-    const lf = Array.isArray(this.getFiles()) ? this.getFiles() : [];
-    const fids = new Set(cf.map(f => f && f.id));
-    out._files = cf.concat(lf.filter(f => f && f.id && !fids.has(f.id)));
-    if (!out.lastModified) out.lastModified = new Date().toISOString();
-    return out;
+    out._files = mergeArr('_files', cloudData._files, localData._files);
+
+    // 3) 课表（单对象）：本机刚改以本机为准，否则云端更新用云端
+    if (this.CLOUD.dirty) {
+      out.schedule = (localData.schedule && Object.keys(localData.schedule).length) ? localData.schedule : (cloudData.schedule || {});
+    } else if (cloudData.schedule && typeof cloudData.schedule === 'object') {
+      out.schedule = (cloudTs >= localTs) ? cloudData.schedule : (localData.schedule || cloudData.schedule);
+    } else {
+      out.schedule = localData.schedule || {};
+    }
+
+    // 4) 本机新增墓碑（本机刚删、云端还没有）→ 需推送
+    let tombNewer = false;
+    Object.keys(tombs).forEach(b => Object.keys(tombs[b]).forEach(id => {
+      const inLocal = localData._deleted && localData._deleted[b] && localData._deleted[b][id];
+      const inCloud = cloudData._deleted && cloudData._deleted[b] && cloudData._deleted[b][id];
+      if (inLocal && !inCloud) tombNewer = true;
+    }));
+
+    out._deleted = tombs;
+    out.lastModified = cloudData.lastModified || new Date().toISOString();
+    this._applyCloudData(out);
+    try { localStorage.setItem(this.SYNC_KEY, String(Date.now())); } catch (e) {}
+    this._markMerged();
+
+    const needPush = localHasExtra || tombNewer || this.CLOUD.dirty;
+    // silent=true：推送前的静默合并，只并入数据，不改状态/不渲染/不递归推送
+    if (silent) return true;
+    this.CLOUD.syncStatus = needPush ? 'dirty' : 'idle';
+    this._updateIndicator();
+    if (window.App && window.App.renderModule) {
+      try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
+    }
+    if (needPush) this.pushToCloud();
+    return true;
   },
 
   // ===== 手动同步（拉取云端 → 合并到本地 → 推送） =====
@@ -787,6 +812,9 @@ const Store = {
   add(moduleId, record) {
     const data = this.get(moduleId);
     record.id = record.id || ('id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+    const nowIso = new Date().toISOString();
+    record.createdAt = record.createdAt || nowIso;
+    record.updatedAt = nowIso;
     data.push(record);
     this.save(moduleId, data);
     return record;
@@ -796,7 +824,7 @@ const Store = {
     const data = this.get(moduleId);
     const index = data.findIndex(r => r.id === id);
     if (index !== -1) {
-      data[index] = { ...data[index], ...updates, id: id };
+      data[index] = { ...data[index], ...updates, id: id, updatedAt: new Date().toISOString() };
       this.save(moduleId, data);
       return data[index];
     }
@@ -807,6 +835,7 @@ const Store = {
     const data = this.get(moduleId);
     const filtered = data.filter(r => r.id !== id);
     this.save(moduleId, filtered);
+    this._addTomb(moduleId, id);   // 记录删除墓碑，随同步通知其他设备删除
   },
 
   // ===== 课表特殊处理 =====
@@ -887,6 +916,7 @@ const Store = {
     const files = this.getFiles();
     const filtered = files.filter(f => f.id !== fileId);
     localStorage.setItem(this.FILE_PREFIX, JSON.stringify(filtered));
+    this._addTomb('_files', fileId);   // 文件删除也跨设备同步
     this.schedulePush();
   },
 
