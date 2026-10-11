@@ -158,7 +158,8 @@ const Store = {
         const cloudTotal = this._countRecords(cloud.data);
         const localTotal = this._countRecords(this._collectAllData());
         const shouldPull = (cloudModified > 0 && localModified === 0) ||
-                           (cloudTotal > localTotal) ||
+                           // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
+                           (cloudTotal > localTotal && cloudModified > localModified) ||
                            // 本地有未上传修改时，记录数相同绝不被云端覆盖（防止丢失用户刚上传的数据）
                            (!this.CLOUD.dirty && cloudTotal === localTotal && cloudModified > localModified);
         if (shouldPull) {
@@ -419,7 +420,8 @@ const Store = {
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
     }
-    if (cloudTotal > localTotal) {
+    // 云端记录更多且云端更新才覆盖；本地刚删除（记录少但时间戳新）时保留本地并推送
+    if (cloudTotal > localTotal && cloudModified > localModified) {
       this._applyCloudData(cloudData);
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       return true;
