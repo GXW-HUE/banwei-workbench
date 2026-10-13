@@ -40,6 +40,192 @@ const Store = {
   SYNC_KEY: 'class_workbench__last_sync',    // 上次成功合并云端的时间戳ms
   TOMB_TTL: 30 * 24 * 3600 * 1000,           // 墓碑保留30天
 
+  // ===== 文件内容存储引擎（IndexedDB）=====
+  // 背景：文件内容（base64）原先与元数据一起塞进 localStorage，而 localStorage 单域名上限约 5MB，
+  //       传几个 Excel/PDF 就会写爆并报"存储空间不足"。现拆分存储：
+  //   · 文件元数据（名称/大小/类型等，体积很小）→ localStorage，保持同步读取、渲染快
+  //   · 文件内容（base64，体积大）→ IndexedDB，配额可达数百 MB~数 GB，不再受 5MB 限制
+  // 对外 API（getFiles / addFile / deleteFile 等）保持同步签名不变，app.js、exporter.js 无需改动。
+  DB_NAME: 'class_workbench_db',
+  DB_VERSION: 1,
+  DB_STORE: 'file_content',
+  MAX_FILES: 500,                // 文件中心最多保留数量（由 100 提升为 500）
+
+  _db: null,
+  _dbReady: null,
+  _idbOk: false,                 // IndexedDB 是否可用（不可用时自动降级为内联存储）
+  _contentCache: {},             // fileId -> base64 内容（内存缓存，保证 getFiles() 同步返回）
+
+  // 打开（必要时创建）IndexedDB
+  _openDB() {
+    if (this._dbReady) return this._dbReady;
+    this._dbReady = new Promise((resolve) => {
+      let req;
+      try {
+        if (typeof indexedDB === 'undefined' || !indexedDB) { resolve(null); return; }
+        req = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+      } catch (e) { console.error('IndexedDB 不可用:', e); resolve(null); return; }
+      req.onupgradeneeded = () => {
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(this.DB_STORE)) {
+            db.createObjectStore(this.DB_STORE, { keyPath: 'id' });
+          }
+        } catch (e) {}
+      };
+      req.onsuccess = () => { this._db = req.result; resolve(this._db); };
+      req.onerror = () => { console.warn('IndexedDB 打开失败:', req.error); resolve(null); };
+      req.onblocked = () => resolve(null);
+    });
+    return this._dbReady;
+  },
+
+  // 写入单个文件内容
+  async _idbPut(id, content) {
+    const db = await this._openDB();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(this.DB_STORE, 'readwrite');
+        tx.objectStore(this.DB_STORE).put({ id: id, content: content, updatedAt: Date.now() });
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
+      } catch (e) { resolve(false); }
+    });
+  },
+
+  // 删除单个文件内容
+  async _idbDelete(id) {
+    const db = await this._openDB();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(this.DB_STORE, 'readwrite');
+        tx.objectStore(this.DB_STORE).delete(id);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) { resolve(false); }
+    });
+  },
+
+  // 读取全部文件内容 → { id: content }
+  async _idbGetAll() {
+    const db = await this._openDB();
+    if (!db) return {};
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(this.DB_STORE, 'readonly');
+        const req = tx.objectStore(this.DB_STORE).getAll();
+        req.onsuccess = () => {
+          const map = {};
+          (req.result || []).forEach(r => { if (r && r.id) map[r.id] = r.content; });
+          resolve(map);
+        };
+        req.onerror = () => resolve({});
+      } catch (e) { resolve({}); }
+    });
+  },
+
+  // 清空文件内容库
+  async _idbClear() {
+    const db = await this._openDB();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(this.DB_STORE, 'readwrite');
+        tx.objectStore(this.DB_STORE).clear();
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) { resolve(false); }
+    });
+  },
+
+  // 启动时初始化：打开 IndexedDB → 内容载入内存缓存 → 迁移历史内联内容
+  async _initFileStore() {
+    this._contentCache = this._contentCache || {};
+    const db = await this._openDB();
+    this._idbOk = !!db;
+    if (db) {
+      const map = await this._idbGetAll();
+      Object.keys(map).forEach(k => { this._contentCache[k] = map[k]; });
+      await this._migrateInlineContent();
+    } else {
+      // 降级：IndexedDB 不可用（极罕见，如隐私模式），维持旧的内联存储行为
+      console.warn('IndexedDB 不可用，文件内容退回 localStorage 内联存储（仍受约 5MB 限制）');
+    }
+  },
+
+  // 一次性迁移：把历史上内联在 localStorage 里的 base64 内容搬进 IndexedDB，
+  // 迁移后从元数据中剥离 content 字段，localStorage 占用立刻大幅下降。
+  async _migrateInlineContent() {
+    const raw = localStorage.getItem(this.FILE_PREFIX);
+    if (!raw) return;
+    let metas;
+    try { metas = JSON.parse(raw); } catch (e) { return; }
+    if (!Array.isArray(metas) || metas.length === 0) return;
+    let changed = false;
+    for (let i = 0; i < metas.length; i++) {
+      const m = metas[i];
+      if (!m) continue;
+      if (typeof m.content === 'string' && m.content.length > 0) {
+        this._contentCache[m.id] = m.content;
+        m.contentChars = m.content.length;
+        m.hasContent = true;
+        delete m.content;               // 剥离大字段，释放 localStorage
+        await this._idbPut(m.id, this._contentCache[m.id]);
+        changed = true;
+      } else if (m.cloudLimited && m.hasContent === undefined) {
+        m.hasContent = false;           // 云端剥离的文件：本设备也无内容
+      }
+    }
+    if (changed) {
+      try {
+        localStorage.setItem(this.FILE_PREFIX, JSON.stringify(metas));
+        console.log('文件内容已迁移至 IndexedDB，localStorage 占用已释放');
+      } catch (e) {}
+    }
+  },
+
+  // 统一写文件：元数据 → localStorage，内容 → IndexedDB（并刷新内存缓存）
+  _writeFilesWithContent(files) {
+    const list = Array.isArray(files) ? files : [];
+    const metas = [];
+    list.forEach(f => {
+      if (!f) return;
+      const m = Object.assign({}, f);
+      const content = (typeof m.content === 'string' && m.content.length > 0) ? m.content : null;
+      if (content) {
+        m.hasContent = true;
+        m.contentChars = content.length;
+        this._contentCache[m.id] = content;
+        if (this._idbOk) {
+          // 写入 IndexedDB（异步，不阻塞界面）；失败自动重试一次，仍失败则告警，避免内容静默丢失
+          this._idbPut(m.id, content).then(ok => {
+            if (!ok) {
+              this._idbPut(m.id, content).then(ok2 => {
+                if (!ok2) console.error('文件内容写入 IndexedDB 失败:', m.id);
+              });
+            }
+          });
+          delete m.content;
+        } else {
+          m.content = content;          // 降级：继续内联
+        }
+      } else if (this._idbOk) {
+        delete m.content;               // 无内容（云端剥离等），元数据不留大字段
+      }
+      metas.push(m);
+    });
+    try {
+      localStorage.setItem(this.FILE_PREFIX, JSON.stringify(metas));
+      return true;
+    } catch (e) {
+      console.error('文件元数据写入失败:', e);
+      return false;
+    }
+  },
+
   // 标记云端数据已合并（本次运行 + 持久化），之后本地数据才可作为权威推送
   _markMerged() {
     this.CLOUD.cloudMerged = true;
@@ -535,22 +721,30 @@ const Store = {
     const data = this._collectAllData();
     // GitHub Gist 单文件上限约 1MB，JSON 字符串留安全余量（防止中文/Base64 超字节限制被截断损坏）
     const MAX = 650000;
-    let json = JSON.stringify(data);
-    if (json.length <= MAX) return data;
-    const files = data._files || [];
-    const bySize = files
-      .map((f, i) => ({ i, len: f && f.content ? f.content.length : 0 }))
+    const files = Array.isArray(data._files) ? data._files : [];
+    // 关键：文件内容现已存放在 IndexedDB，总量可能达数百 MB。
+    // 若沿用"整包 JSON.stringify"来测体积，会把所有 base64 拼成一个巨型字符串，
+    // 瞬间吃满内存并卡死页面。改为：先用"不含内容"的副本量基础体积，再按预算装入小文件。
+    const shell = Object.assign({}, data);
+    shell._files = files.map(f => Object.assign({}, f, { content: null }));
+    const base = JSON.stringify(shell).length;
+    let budget = MAX - base;
+    // 小文件优先上云；放不下的剔除内容并标记 cloudLimited（完整内容仍在本机 IndexedDB）
+    const withSize = files
+      .map((f, i) => ({ i: i, len: (f && typeof f.content === 'string') ? f.content.length : 0 }))
       .filter(x => x.len > 0)
-      .sort((a, b) => b.len - a.len);
+      .sort((a, b) => a.len - b.len);
+    const keep = {};
+    withSize.forEach(item => {
+      if (budget - item.len >= 0) { budget -= item.len; keep[item.i] = true; }
+    });
     let removed = 0;
-    for (const item of bySize) {
-      if (json.length <= MAX) break;
-      const f = files[item.i];
-      f.content = null;          // 剔除内容（本机 localStorage 仍保留完整文件）
-      f.cloudLimited = true;     // 标记：该文件内容仅保存在上传设备
+    data._files = files.map((f, i) => {
+      if (!f || typeof f.content !== 'string' || f.content.length === 0) return f;
+      if (keep[i]) return f;
       removed++;
-      json = JSON.stringify(data);
-    }
+      return Object.assign({}, f, { content: null, cloudLimited: true });  // 标记：内容仅保存在上传设备
+    });
     if (removed > 0) {
       console.warn(`云端存储已满，${removed} 个超大文件的内容仅保存在上传设备（其他设备可看到文件名，完整文件请在上传设备查看/导出）`);
     }
@@ -584,7 +778,8 @@ const Store = {
         }
         return cf;
       });
-      localStorage.setItem(this.FILE_PREFIX, JSON.stringify(protectedFiles));
+      // 云端带来的文件内容写入 IndexedDB，元数据写入 localStorage
+      this._writeFilesWithContent(protectedFiles);
     }
     // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
     if (cloudData._deleted && typeof cloudData._deleted === 'object') {
@@ -725,12 +920,18 @@ const Store = {
     this.CLOUD.pulling = true;
     this.CLOUD.everMerged = localStorage.getItem(this.EVER_MERGED_KEY) === '1';
 
+    // 初始化文件内容存储（IndexedDB）+ 迁移历史内联内容；必须在渲染/云同步之前完成
+    await this._initFileStore();
+
     if (needsReload) {
       Object.keys(MODULE_CONFIG).forEach(moduleId => {
         localStorage.removeItem(this.getKey(moduleId));
       });
       localStorage.removeItem(this.FILE_PREFIX);
       localStorage.removeItem(this.PREFIX + '_last_modified');
+      // 版本升级：同步清空 IndexedDB 内容，避免留下孤儿数据
+      this._contentCache = {};
+      this._idbClear();
     }
 
     // 首次使用：先加载示例数据（直接写本地，不走 save，避免示例数据触发推送/修改时间；
@@ -903,14 +1104,25 @@ const Store = {
   // ===== 文件中心 =====
   getFiles() {
     const raw = localStorage.getItem(this.FILE_PREFIX);
+    let metas = [];
     if (raw) {
       try {
-        return JSON.parse(raw);
+        metas = JSON.parse(raw);
       } catch (e) {
         return [];
       }
     }
-    return [];
+    if (!Array.isArray(metas)) return [];
+    const cache = this._contentCache || {};
+    // 把 IndexedDB（内存缓存）中的内容回填到元数据上，保持"同步返回带 content"的旧行为
+    return metas.map(m => {
+      if (!m) return m;
+      if (cache[m.id] !== undefined) {
+        return Object.assign({}, m, { content: cache[m.id] });
+      }
+      // 缓存无内容：云端剥离的 cloudLimited 文件，或降级模式下的内联内容
+      return Object.assign({}, m, { content: (m.content === undefined ? null : m.content) });
+    });
   },
 
   addFile(fileInfo) {
@@ -918,35 +1130,58 @@ const Store = {
     // id 必须带随机后缀：同一毫秒连续上传多个文件时，不能生成相同 id（否则合并去重会丢文件）
     fileInfo.id = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     fileInfo.createdAt = new Date().toISOString();
-    files.unshift(fileInfo);
-    if (files.length > 100) {
-      files.length = 100;
+    const content = (typeof fileInfo.content === 'string' && fileInfo.content.length > 0) ? fileInfo.content : null;
+
+    // 已有文件：只保留元数据（内容仍在 IndexedDB，不重复回写）
+    const list = files.map(f => {
+      if (!f) return f;
+      const m = Object.assign({}, f);
+      if (this._idbOk) delete m.content;
+      return m;
+    });
+    // 新文件带 content 入列，由 _writeFilesWithContent 拆分存储
+    list.unshift(fileInfo);
+
+    // 超出上限时截断，并同步清理被淘汰文件在 IndexedDB 中的内容（避免孤儿数据占空间）
+    if (list.length > this.MAX_FILES) {
+      const dropped = list.splice(this.MAX_FILES);
+      dropped.forEach(d => {
+        if (d && d.id) { delete this._contentCache[d.id]; this._idbDelete(d.id); }
+      });
     }
-    try {
-      localStorage.setItem(this.FILE_PREFIX, JSON.stringify(files));
-    } catch (e) {
-      console.error('文件存储失败（可能存储空间已满）:', e);
+
+    const ok = this._writeFilesWithContent(list);
+    if (!ok) {
+      console.error('文件保存失败（localStorage 元数据写入异常）');
       if (typeof App !== 'undefined' && App.toast) {
-        App.toast('存储空间不足，文件保存失败，请删除一些旧文件', 'error');
+        App.toast('文件保存失败，请删除一些旧文件后重试', 'error');
       }
-      // 回滚：移除刚添加的文件
-      files.shift();
       return null;
     }
+    // 兜底确保内存缓存命中，使本次调用后立即可读（预览/下载）
+    if (content) this._contentCache[fileInfo.id] = content;
     this.schedulePush();
-    return fileInfo;
+    return Object.assign({}, fileInfo, { content: content });
   },
 
   deleteFile(fileId) {
     const files = this.getFiles();
-    const filtered = files.filter(f => f.id !== fileId);
-    localStorage.setItem(this.FILE_PREFIX, JSON.stringify(filtered));
+    // 只回写元数据：剩余文件的内容仍在 IndexedDB，无需重复写入
+    const filtered = files.filter(f => f.id !== fileId).map(f => {
+      const m = Object.assign({}, f);
+      if (this._idbOk) delete m.content;
+      return m;
+    });
+    this._writeFilesWithContent(filtered);
+    // 同步清理 IndexedDB 内容与内存缓存
+    delete this._contentCache[fileId];
+    this._idbDelete(fileId);
     this._addTomb('_files', fileId);   // 文件删除也跨设备同步
     this.schedulePush();
   },
 
   saveFileList(files) {
-    localStorage.setItem(this.FILE_PREFIX, JSON.stringify(files));
+    this._writeFilesWithContent(files);
     this.schedulePush();
   },
 
@@ -958,11 +1193,42 @@ const Store = {
       if (config.type === 'schedule') {
         const data = this.getSchedule();
         stats[moduleId] = Object.keys(data).length;
+      } else if (config.type === 'file') {
+        // 文件型模块：记录数 = 该模块下的文件数（上传一个文件即一条记录）
+        // 修复：此前走 else 分支读空的模块表，导致仪表盘/设置页永远显示 0
+        stats[moduleId] = this.getFiles().filter(f => f && f.module === moduleId).length;
       } else {
         stats[moduleId] = this.get(moduleId).length;
       }
     });
     return stats;
+  },
+
+  // ===== 存储占用概览（供设置页展示，便于判断还剩多少空间）=====
+  getStorageInfo() {
+    let lsChars = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        lsChars += (k || '').length + (localStorage.getItem(k) || '').length;
+      }
+    } catch (e) {}
+    let contentChars = 0, withContent = 0;
+    const files = this.getFiles();
+    files.forEach(f => {
+      if (f && typeof f.content === 'string' && f.content.length) {
+        contentChars += f.content.length;
+        withContent++;
+      }
+    });
+    return {
+      fileCount: files.length,
+      fileWithContent: withContent,
+      contentChars: contentChars,
+      contentMB: +(contentChars / 1024 / 1024).toFixed(2),
+      localStorageKB: +(lsChars / 1024).toFixed(1),
+      engine: this._idbOk ? 'IndexedDB' : 'localStorage(降级)'
+    };
   },
 
   // ===== 清空所有数据（本地+云端） =====
@@ -972,6 +1238,9 @@ const Store = {
     });
     localStorage.removeItem(this.FILE_PREFIX);
     localStorage.removeItem(this.INIT_KEY);
+    // 同步清空 IndexedDB 中的文件内容与内存缓存
+    this._contentCache = {};
+    this._idbClear();
     // 清空云端
     if (this.CLOUD.enabled) {
       const emptyData = { version: this.DATA_VERSION, lastModified: new Date().toISOString() };
@@ -1024,7 +1293,7 @@ const Store = {
       }
     });
     if (data._files) {
-      localStorage.setItem(this.FILE_PREFIX, JSON.stringify(data._files));
+      this._writeFilesWithContent(data._files);
       this.schedulePush();
     }
     return true;
