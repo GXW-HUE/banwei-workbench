@@ -152,6 +152,29 @@ const App = {
       if (e.target.id === 'confirm-overlay') this.closeConfirm();
     });
 
+    // ===== 返回键（手机物理返回键 / 浏览器返回）=====
+    // 原来 SPA 没有历史记录管理，手机上按返回键会直接退出站点。
+    // 现在：进入子模块时压入一条历史记录（URL 完全不变），按返回键时优先关闭弹窗，
+    // 其次回退到上一个界面；退到首页后再按返回才是真正离开站点。
+    window.addEventListener('popstate', () => {
+      const modalOpen = document.getElementById('modal-overlay').classList.contains('show');
+      const confirmOpen = document.getElementById('confirm-overlay').classList.contains('show');
+      // 1) 有确认框/弹窗打开时，返回键只关闭它，不跳转界面
+      if (confirmOpen) {
+        this.closeConfirm();
+        try { history.pushState({ bwGuard: true }, '', location.href); } catch (e) {}
+        return;
+      }
+      if (modalOpen) {
+        this.closeModal();
+        try { history.pushState({ bwGuard: true }, '', location.href); } catch (e) {}
+        return;
+      }
+      // 2) 无弹窗时，回退到上一个模块
+      const target = (history.state && history.state.bwModule) ? history.state.bwModule : 'dashboard';
+      this.renderModule(target, true);
+    });
+
     // 文件导入（根据扩展名自动判断格式，支持一次选择多个文件批量上传）
     document.getElementById('file-input').addEventListener('change', (e) => {
       const files = Array.from(e.target.files || []);
@@ -203,12 +226,18 @@ const App = {
   },
 
   // ===== 渲染模块 =====
-  renderModule(moduleId) {
+  renderModule(moduleId, isPop) {
+    const prevModule = this.currentModule;
     // 切换模块时清空选择
     if (this.currentModule !== moduleId) {
       this.selectedRecords.clear();
     }
     this.currentModule = moduleId;
+    // 手机返回键支持：用户主动切换模块时压入一条历史记录（URL 保持不变），
+    // 记录"当前所处的模块"。返回键弹出该条目后，前一条目即上一个界面。
+    if (!isPop && prevModule && prevModule !== moduleId) {
+      try { history.pushState({ bwModule: moduleId }, '', location.href); } catch (e) {}
+    }
     this.searchQuery = '';
     // 切换到非文件中心模块时重置文件中心状态
     if (moduleId !== 'files') {
@@ -419,7 +448,9 @@ const App = {
 
     Object.keys(MODULE_CONFIG).forEach(moduleId => {
       const config = MODULE_CONFIG[moduleId];
-      const count = config.type === 'schedule' ? Object.keys(Store.getSchedule()).length : Store.get(moduleId).length;
+      // 文件型模块（学生请假 / 学生缺勤 / 周末去向）的数据存放在"文件列表"中，
+      // 不能再用 Store.get(moduleId).length 统计，否则上传了文件也永远显示 0
+      const count = stats[moduleId] || 0;
       html += `
         <div class="module-card" onclick="App.renderModule('${moduleId}')">
           <div class="module-card-header">
@@ -428,7 +459,7 @@ const App = {
           </div>
           <div class="module-card-desc">${config.desc}</div>
           <div class="module-card-footer">
-            <span>共 <span class="record-count">${count}</span> 条记录</span>
+            <span>共 <span class="record-count">${count}</span> ${config.type === 'file' ? '个文件' : '条记录'}</span>
             <span style="color:${config.color};font-weight:500;">查看 →</span>
           </div>
         </div>
