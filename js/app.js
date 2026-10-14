@@ -36,6 +36,10 @@ const App = {
 
   // ===== 加载并显示局域网访问地址 =====
   loadAccessInfo() {
+    // 仅在本地/离线打开时探测局域网地址（由本地后端提供 /api/info）。
+    // 公网部署（如 GitHub Pages）没有本地后端，跳过探测，避免无意义的 404 噪音。
+    const h = location.hostname;
+    if (h !== 'localhost' && h !== '127.0.0.1' && location.protocol !== 'file:') return;
     fetch('/api/info')
       .then(res => res.json())
       .then(data => {

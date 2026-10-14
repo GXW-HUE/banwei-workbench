@@ -538,6 +538,8 @@ const Exporter = {
     const wb = XLSX.utils.book_new();
     Object.keys(MODULE_CONFIG).forEach(moduleId => {
       const config = MODULE_CONFIG[moduleId];
+      // 文件型模块（请假/缺勤/周末去向）是上传文件容器，不纳入表格类导出
+      if (config.type === 'file') return;
       let ws;
       if (config.type === 'schedule') {
         ws = this.buildScheduleSheet(moduleId);
@@ -632,6 +634,8 @@ const Exporter = {
 
     Object.keys(MODULE_CONFIG).forEach((moduleId, idx) => {
       const config = MODULE_CONFIG[moduleId];
+      // 文件型模块是上传文件容器，不纳入文档类导出
+      if (config.type === 'file') return;
       if (idx > 0) html += '<div class="page-break"></div>';
       html += `<h2>${config.icon} ${config.title}</h2>`;
       if (config.type === 'schedule') {
@@ -780,6 +784,8 @@ const Exporter = {
     // 各模块数据
     Object.keys(MODULE_CONFIG).forEach(moduleId => {
       const config = MODULE_CONFIG[moduleId];
+      // 文件型模块是上传文件容器，不纳入 PDF 导出
+      if (config.type === 'file') return;
       doc.addPage();
       doc.setFontSize(14);
       doc.setTextColor(37, 99, 235);
