@@ -185,7 +185,9 @@ const MODULE_CONFIG = {
       { name: 'content', label: '谈话内容', type: 'textarea', width: 300 },
       { name: 'studentState', label: '学生状态', type: 'select', options: ['良好','一般','需关注','需干预'], width: 100 },
       { name: 'followUp', label: '后续跟进', type: 'textarea', width: 250 }
-    ]
+    ],
+    // 列表只显示「谈话日期 + 被谈话人(学生姓名)」
+    tableFields: ['date', 'studentName']
   },
 
   // ----- 四进两联一交友 -----
@@ -199,11 +201,13 @@ const MODULE_CONFIG = {
     fields: [
       { name: 'date', label: '日期', type: 'date', width: 120, required: true },
       { name: 'activityType', label: '活动类型', type: 'select', options: ['进班级','进宿舍','进网络','进食堂','联系学生','联系家长','交友活动'], width: 120 },
-      { name: 'participants', label: '参与人员', type: 'text', width: 180 },
+      { name: 'participants', label: '被谈话人', type: 'text', width: 180 },
       { name: 'content', label: '活动内容', type: 'textarea', width: 300 },
       { name: 'effect', label: '活动效果', type: 'textarea', width: 250 },
       { name: 'notes', label: '备注', type: 'textarea', width: 180 }
-    ]
+    ],
+    // 列表只显示「谈话日期 + 被谈话人」，不再显示「活动类型」
+    tableFields: ['date', 'participants']
   },
 
   // ----- 主题班会 -----
