@@ -508,7 +508,8 @@ const App = {
     // 兜底：末尾连续2-4个汉字
     m = t.match(/([\u4e00-\u9fa5]{2,4})$/);
     if (m) return m[1];
-    return t;
+    // 兜底：纯短串直接返回；过长（整段文本）视为未提取到姓名
+    return t.length <= 8 ? t : '';
   },
 
   // ===== 渲染表���数据 =====
@@ -551,9 +552,14 @@ const App = {
       bodyHtml += `<td style="text-align:center;"><input type="checkbox" class="row-checkbox" data-id="${record.id}" ${checked} onclick="App.toggleSelectRow('${moduleId}', '${record.id}', this.checked)"></td>`;
       displayFields.forEach(f => {
         let val = record[f.name];
-        // 四进两联一交友：被谈话人字段清洗，只显示人名（兼容"机电一体化 2503 谢鸿宇"）
-        if (moduleId === 'friendship' && f.name === 'participants' && val) {
-          val = this._extractPersonName(val);
+        // 四进两联一交友：被谈话人字段清洗，只显示人名
+        // 兼容两种旧数据：1) 字段直接存"机电一体化 2503 谢鸿宇"  2) 字段为空、姓名藏在全文(content)里
+        if (moduleId === 'friendship' && f.name === 'participants') {
+          const src = (val || (record.content || '')).trim();
+          if (src) {
+            const name = this._extractPersonName(src);
+            if (name) val = name;
+          }
         }
         if (val === undefined || val === null || val === '') {
           val = '<span style="color:#cbd5e1;">—</span>';
