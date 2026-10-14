@@ -83,6 +83,19 @@ const DocxParser = {
     return '';
   },
 
+  // 从文本提取参与人员/被谈话人姓名（兼容"机电一体化 2503 谢鸿宇"这类班级+姓名混合格式）
+  extractParticipantName(text) {
+    if (!text) return '';
+    const t = String(text).trim();
+    // 模式1：专业(可能带英文/中文) + 数字(班级) + 姓名（取最后2-4个汉字作为人名）
+    let m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
+    if (m) return m[1];
+    // 模式2：末尾连续 2-4 个汉字（兜底，适配只填了"谢鸿宇"的情况）
+    m = t.match(/([\u4e00-\u9fa5]{2,4})$/);
+    if (m) return m[1];
+    return t;
+  },
+
   // ===== 各模块解析器 =====
 
   parseWeekly(text, fileName) {
@@ -166,10 +179,12 @@ const DocxParser = {
     for (let kw of typeKeywords) {
       if (text.includes(kw)) { activityType = kw; break; }
     }
+    // 从 Word 文本提取被谈话人姓名
+    let participants = this.extractParticipantName(text);
     return [{
       date: date,
       activityType: activityType,
-      participants: '',
+      participants: participants,
       content: text,
       effect: '',
       notes: ''

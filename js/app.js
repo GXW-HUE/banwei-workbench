@@ -498,6 +498,19 @@ const App = {
     `;
   },
 
+  // 从"机电一体化 2503 谢鸿宇"这类混合格式中提取人名（用于四进两联一交友等模块的列表显示）
+  _extractPersonName(text) {
+    if (!text) return text;
+    const t = String(text).trim();
+    // 专业(可能带英文/中文) + 班级数字 + 姓名，取最后2-4个汉字
+    let m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
+    if (m) return m[1];
+    // 兜底：末尾连续2-4个汉字
+    m = t.match(/([\u4e00-\u9fa5]{2,4})$/);
+    if (m) return m[1];
+    return t;
+  },
+
   // ===== 渲染表���数据 =====
   renderTable(moduleId) {
     const config = MODULE_CONFIG[moduleId];
@@ -538,6 +551,10 @@ const App = {
       bodyHtml += `<td style="text-align:center;"><input type="checkbox" class="row-checkbox" data-id="${record.id}" ${checked} onclick="App.toggleSelectRow('${moduleId}', '${record.id}', this.checked)"></td>`;
       displayFields.forEach(f => {
         let val = record[f.name];
+        // 四进两联一交友：被谈话人字段清洗，只显示人名（兼容"机电一体化 2503 谢鸿宇"）
+        if (moduleId === 'friendship' && f.name === 'participants' && val) {
+          val = this._extractPersonName(val);
+        }
         if (val === undefined || val === null || val === '') {
           val = '<span style="color:#cbd5e1;">—</span>';
         } else if (f.type === 'select') {
