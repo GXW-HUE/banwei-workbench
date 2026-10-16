@@ -74,23 +74,52 @@ const DocxParser = {
     return '';
   },
 
-  // 从文本提取学生姓名
+  // 从文本提取学生姓名（严格限定"被谈话人"字段，避免跨到"谈话人"字段）
   extractStudentName(text) {
-    let m = text.match(/被谈话人[：:]\s*[^\n]*?\s+([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
-    if (m) return m[1];
-    m = text.match(/(?:谈话对象|学生姓名|姓名)[：:]\s*([\u4e00-\u9fa5]{2,4})/);
+    if (!text) return '';
+    const t = String(text).trim();
+    // 严格匹配"被谈话人："字段，到换行或"谈话人"之前结束
+    let m = t.match(/被谈话人[：:]\s*([^\n]{1,40}?)(?=\s*谈话人[：:]|\n|$)/);
+    if (m) {
+      let raw = m[1].trim();
+      // 情况1：开头就是姓名，后面可能跟"班"或空格，如"张思航 班：..."、"张思航"
+      let nameMatch = raw.match(/^([\u4e00-\u9fa5]{2,4})(?=\s|班|$)/);
+      if (nameMatch) return nameMatch[1];
+      // 情况2：班级在前、姓名在后，如"机电一体化2503班 张思航"
+      // 先把"班"字去掉，避免末尾连续汉字匹配成"班张思航"
+      let cleaned = raw.replace(/班/g, ' ').trim();
+      let endMatch = cleaned.match(/([\u4e00-\u9fa5]{2,4})$/);
+      if (endMatch) return endMatch[1];
+      // 兜底：字段中任意2-4个连续汉字
+      let simple = raw.match(/([\u4e00-\u9fa5]{2,4})/);
+      if (simple) return simple[1];
+    }
+    // 兜底：谈话对象、学生姓名、姓名
+    m = t.match(/(?:谈话对象|学生姓名|姓名)[：:]\s*([\u4e00-\u9fa5]{2,4})/);
     if (m) return m[1];
     return '';
   },
 
-  // 从文本提取参与人员/被谈话人姓名（兼容"机电一体化 2503 谢鸿宇"这类班级+姓名混合格式）
+  // 从文本提取参与人员/被谈话人姓名
   extractParticipantName(text) {
     if (!text) return '';
     const t = String(text).trim();
-    // 模式1：专业(可能带英文/中文) + 数字(班级) + 姓名（取最后2-4个汉字作为人名）
-    let m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
+    // 优先严格匹配"被谈话人："字段，避免跨到"谈话人"字段
+    let m = t.match(/被谈话人[：:]\s*([^\n]{1,40}?)(?=\s*谈话人[：:]|\n|$)/);
+    if (m) {
+      let raw = m[1].trim();
+      let nameMatch = raw.match(/^([\u4e00-\u9fa5]{2,4})(?=\s|班|$)/);
+      if (nameMatch) return nameMatch[1];
+      let cleaned = raw.replace(/班/g, ' ').trim();
+      let endMatch = cleaned.match(/([\u4e00-\u9fa5]{2,4})$/);
+      if (endMatch) return endMatch[1];
+      let simple = raw.match(/([\u4e00-\u9fa5]{2,4})/);
+      if (simple) return simple[1];
+    }
+    // 兼容"机电一体化 2503 谢鸿宇"这类班级+姓名混合格式
+    m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
     if (m) return m[1];
-    // 模式2：末尾连续 2-4 个汉字（兜底，适配只填了"谢鸿宇"的情况）
+    // 兜底：末尾连续 2-4 个汉字
     m = t.match(/([\u4e00-\u9fa5]{2,4})$/);
     if (m) return m[1];
     return t;

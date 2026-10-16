@@ -502,12 +502,24 @@ const App = {
     `;
   },
 
-  // 从"机电一体化 2503 谢鸿宇"这类混合格式中提取人名（用于四进两联一交友等模块的列表显示）
+  // 从文本中提取被谈话人/学生姓名（优先识别"被谈话人："字段，避免跨到"谈话人"字段）
   _extractPersonName(text) {
     if (!text) return text;
     const t = String(text).trim();
-    // 专业(可能带英文/中文) + 班级数字 + 姓名，取最后2-4个汉字
-    let m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
+    // 优先严格匹配"被谈话人："字段，到换行或"谈话人"之前结束
+    let m = t.match(/被谈话人[：:]\s*([^\n]{1,40}?)(?=\s*谈话人[：:]|\n|$)/);
+    if (m) {
+      let raw = m[1].trim();
+      // 情况1：开头就是姓名，后面可能跟"班"或空格
+      let nameMatch = raw.match(/^([\u4e00-\u9fa5]{2,4})(?=\s|班|$)/);
+      if (nameMatch) return nameMatch[1];
+      // 情况2：班级在前、姓名在后；先去掉"班"字避免误匹配
+      let cleaned = raw.replace(/班/g, ' ').trim();
+      let endMatch = cleaned.match(/([\u4e00-\u9fa5]{2,4})$/);
+      if (endMatch) return endMatch[1];
+    }
+    // 兼容"机电一体化 2503 谢鸿宇"这类班级+姓名混合格式
+    m = t.match(/[\u4e00-\u9fa5a-zA-Z]+\s*\d+\s*班?\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)/);
     if (m) return m[1];
     // 兜底：末尾连续2-4个汉字
     m = t.match(/([\u4e00-\u9fa5]{2,4})$/);
