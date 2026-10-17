@@ -260,49 +260,61 @@ const Store = {
   },
 
   // ===== 云同步通道（国内网络多通道，收集全部结果取最新版本，防止代理缓存旧数据） =====
+  // 每个通道提供：url（拉 data.json）+ base（拼接分片文件名 files_blob_0/1/...）
   _buildChannels() {
     const ts = Date.now();
-    const raw = 'https://gist.githubusercontent.com/' + this.CLOUD.owner + '/' + this.CLOUD.gistId + '/raw/data.json?t=' + ts;
-    const filesRaw = 'https://gist.githubusercontent.com/' + this.CLOUD.owner + '/' + this.CLOUD.gistId + '/raw/files_blob.json?t=' + ts;
+    const owner = this.CLOUD.owner, gid = this.CLOUD.gistId;
+    const rawBase = 'https://gist.githubusercontent.com/' + owner + '/' + gid + '/raw/';
+    const dataUrl = rawBase + 'data.json?t=' + ts;
     return [
-      { name: 'gh-proxy',   url: 'https://gh-proxy.com/' + raw, filesUrl: 'https://gh-proxy.com/' + filesRaw, api: false },
-      { name: 'ghfast',     url: 'https://ghfast.top/' + raw, filesUrl: 'https://ghfast.top/' + filesRaw, api: false },
-      { name: 'raw',        url: raw, filesUrl: filesRaw, api: false },
-      { name: 'api',        url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
+      { name: 'gh-proxy',    url: 'https://gh-proxy.com/' + dataUrl,    base: 'https://gh-proxy.com/' + rawBase,    api: false },
+      { name: 'ghfast',      url: 'https://ghfast.top/' + dataUrl,      base: 'https://ghfast.top/' + rawBase,      api: false },
+      { name: 'raw',         url: dataUrl,                              base: rawBase,                              api: false },
+      { name: 'api',         url: this.CLOUD.apiBase + gid,             base: null,                                 api: true,
         headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } },
-      { name: 'ghproxy-net', url: 'https://ghproxy.net/' + raw, filesUrl: 'https://ghproxy.net/' + filesRaw, api: false }
+      { name: 'ghproxy-net', url: 'https://ghproxy.net/' + dataUrl,     base: 'https://ghproxy.net/' + rawBase,     api: false }
     ];
   },
 
   // 单通道拉取（独立超时，可被外部 abort）
+  // 拉取 data.json 后，根据其中 _blobShards 列表（或旧版单一 files_blob）并发拉取所有文件内容分片，
+  // 合并成 data.files 供后续恢复使用。分片缺失/失败不致命：本机有内容的文件仍可用。
   async _fetchOneChannel(ch, timeoutMs, controller) {
     const ctl = controller || new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     const _headers = Object.assign({ 'User-Agent': 'banwei-workbench', 'Accept': 'application/json' }, ch.headers || {});
     try {
-      const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const txt = await resp.text();
-      // 同时拉取独立存储的文件内容（files_blob.json）；失败不致命，降级为仅本机有内容的文件
-      let filesData = {};
-      try {
-        const fresp = await fetch(ch.filesUrl, { signal: ctl.signal, headers: _headers });
-        if (fresp.ok) {
-          const ftxt = await fresp.text();
-          if (ftxt && ftxt.trim()) filesData = JSON.parse(ftxt) || {};
-        }
-      } catch (e) { /* files_blob 缺失或拉取失败：本机有内容的文件仍可正常用 */ }
-      const mergeFiles = (data) => {
-        if (data && typeof data === 'object') data.files = filesData.files || {};
-        return data;
-      };
+      let data, filesData = {};
       if (ch.api) {
-        const gist = JSON.parse(txt);
+        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const gist = JSON.parse(await resp.text());
         const file = gist.files && gist.files['data.json'];
         if (!file || !file.content) return { success: true, hasData: false };
-        return { success: true, hasData: true, data: mergeFiles(JSON.parse(file.content)), channel: ch.name };
+        data = JSON.parse(file.content);
+        // API 通道直接遍历 gist.files 收集所有 files_blob* 分片（含旧版单一 files_blob.json 与分片 files_blob_0/1/...）
+        Object.keys(gist.files).forEach(n => {
+          if (n === 'data.json') return;
+          if (n.indexOf('files_blob') === 0) {
+            try { const j = JSON.parse(gist.files[n].content || '{}'); if (j && j.files) Object.assign(filesData, j.files); } catch (e) {}
+          }
+        });
+      } else {
+        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        data = JSON.parse(await resp.text());
+        // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
+        const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards : ['files_blob.json'];
+        await Promise.all(shardNames.map(async (nm) => {
+          try {
+            const r = await fetch(ch.base + nm + '?t=' + Date.now(), { signal: ctl.signal, headers: _headers });
+            if (r.ok) { const j = JSON.parse(await r.text()); if (j && j.files) Object.assign(filesData, j.files); }
+          } catch (e) { /* 单分片失败不致命 */ }
+        }));
       }
-      return { success: true, hasData: true, data: mergeFiles(JSON.parse(txt)), channel: ch.name };
+      // filesData 本身就是 { 文件id: 内容 } 的映射，直接作为 cloudData.files 供后续合并恢复
+      data.files = filesData || {};
+      return { success: true, hasData: true, data, channel: ch.name };
     } finally {
       clearTimeout(timer);
     }
@@ -487,17 +499,11 @@ const Store = {
         const allData = this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
-        allData.filesPayload.lastModified = allData.data.lastModified;
-        const body = {
-          files: {
-            'data.json': {
-              content: JSON.stringify(allData.data, null, 2)
-            },
-            'files_blob.json': {
-              content: JSON.stringify(allData.filesPayload)
-            }
-          }
-        };
+        const body = { files: { 'data.json': { content: JSON.stringify(allData.data, null, 2) } } };
+        Object.keys(allData.filesPayload).forEach(name => {
+          const v = allData.filesPayload[name];
+          body.files[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
+        });
         // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
         let ok = false, lastErr = null;
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -546,13 +552,12 @@ const Store = {
       const allData = this._safeCollectAllData();
       allData.data.lastModified = new Date().toISOString();
       this._setLocalModified(allData.data.lastModified);
-      allData.filesPayload.lastModified = allData.data.lastModified;
-      const body = JSON.stringify({
-        files: {
-          'data.json': { content: JSON.stringify(allData.data, null, 2) },
-          'files_blob.json': { content: JSON.stringify(allData.filesPayload) }
-        }
+      const bodyFiles = { 'data.json': { content: JSON.stringify(allData.data, null, 2) } };
+      Object.keys(allData.filesPayload).forEach(name => {
+        const v = allData.filesPayload[name];
+        bodyFiles[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
       });
+      const body = JSON.stringify({ files: bodyFiles });
       // keepalive：页面关闭/切后台后请求仍会继续完成
       fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
         method: 'PATCH',
@@ -738,41 +743,48 @@ const Store = {
     return n;
   },
 
-  // ===== 推送前安全化：把文件内容单独剥离到 files_blob.json，data.json 只留元数据 =====
+  // ===== 推送前安全化：把文件内容拆成多个分片（files_blob_0/1/...），data.json 只留元数据 =====
   // 背景：文件 base64 内容若与数据一起塞进 data.json，会快速逼近 Gist 单文件 ~1MB 上限，
   //       导致后上传/较大的文件被降级为 cloudLimited（内容只留本机），无法跨设备预览/导出。
-  // 解决：文件内容单独存到 files_blob.json（独立 1MB 预算），data.json 体积大幅瘦身，
-  //       绝大多数文档都能上云，仅真正的超大文件（>~750KB 原始）才降级到本机。
+  // 解决：文件内容单独拆成多个 files_blob_N.json 分片（每片 < SHARD_MAX 字符，约 1MB 预算），
+  //       data.json 体积大幅瘦身，绝大多数文档都能全部上云；仅真正超大（>~750KB 原始）的单文件才降级到本机。
   _safeCollectAllData() {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
-    const contentById = {};
-    // files_blob.json 独立预算：Gist 单文件约 1MB，留安全余量（base64 体积 ×1.33 估算）
-    const FILE_MAX = 900000;
-    // 仅按"文件内容体积"预算（data.json 剥离内容后仅 ~100KB，无需再占预算）
-    const withSize = files
-      .map((f, i) => ({ i: i, len: (f && typeof f.content === 'string') ? f.content.length : 0 }))
-      .filter(x => x.len > 0)
-      .sort((a, b) => a.len - b.len);
-    let used = 0;
-    const keep = {};
-    withSize.forEach(item => {
-      if (used + item.len <= FILE_MAX) { used += item.len; keep[item.i] = true; }
+    // 收集所有本机有内容的文件，按体积从大到小贪心装入分片（保证单片 < SHARD_MAX 字符）
+    const SHARD_MAX = 900000;   // Gist 单文件约 1MB（字符）上限，留安全余量
+    const MAX_SINGLE = 1000000; // 单文件 base64 上限（约 750KB 原始）；超大文件无法上云，仅留本机
+    // 单文件超过 GitHub 上限的，直接降级（不进分片），避免单片超限导致整次 PATCH 失败、连累其他文件
+    const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0 && f.content.length <= MAX_SINGLE);
+    withContent.sort((a, b) => b.content.length - a.content.length);
+    const shards = [];
+    let cur = {}, curLen = 0;
+    withContent.forEach(f => {
+      const len = f.content.length;
+      if (curLen > 0 && curLen + len > SHARD_MAX) { shards.push(cur); cur = {}; curLen = 0; }
+      cur[f.id] = f.content;
+      curLen += len;
     });
-    let removed = 0;
-    data._files = files.map((f, i) => {
-      if (!f || typeof f.content !== 'string' || f.content.length === 0) return f;
-      if (keep[i]) {
-        contentById[f.id] = f.content;          // 文件内容单独上云
+    if (curLen > 0) shards.push(cur);
+    // _files 剥离 content（内容已拆到分片）；超大单文件标记 cloudLimited=true 仅留本机，不进分片
+    data._files = files.map(f => {
+      if (typeof f.content === 'string' && f.content.length > MAX_SINGLE) {
+        return Object.assign({}, f, { content: null, cloudLimited: true });
+      }
+      if (typeof f.content === 'string' && f.content.length > 0) {
         return Object.assign({}, f, { content: null, cloudLimited: false });
       }
-      removed++;
-      return Object.assign({}, f, { content: null, cloudLimited: true });  // 超大文件：内容仅保存在上传设备
+      return f;
     });
-    if (removed > 0) {
-      console.warn(`云端存储已满，${removed} 个超大文件的内容仅保存在上传设备（其他设备可看到文件名，完整文件请在上传设备查看/导出）`);
+    const shardNames = shards.map((s, i) => 'files_blob_' + i);
+    data._blobShards = shardNames;   // 记录分片清单，供拉取端定位所有分片
+    const filesPayload = {};
+    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify(shards[i]); });
+    // 仅当本次确有文件内容分片上云时，才删除旧版单一 files_blob.json；
+    // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
+    if (shards.length > 0) {
+      filesPayload['files_blob.json'] = null;
     }
-    const filesPayload = { files: contentById };
     return { data, filesPayload };
   },
 
