@@ -12,8 +12,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="班委工作台">
-  <link rel="stylesheet" href="css/style.css?v=20261017-27">
-<script src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
+  <link rel="stylesheet" href="css/style.css?v=20261017-28">
+<script async src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
 <script>
 (function(){
   try{
@@ -36,7 +36,83 @@
 })();
 </script></head>
 <body>
-  <div id="bw-version" style="position:fixed;left:4px;bottom:2px;font-size:10px;color:#b8c4d8;opacity:.65;z-index:1;pointer-events:none;user-select:none;">v20261013-16</div>
+  <div id="bw-version" style="position:fixed;left:4px;bottom:2px;font-size:10px;color:#b8c4d8;opacity:.65;z-index:1;pointer-events:none;user-select:none;">检查版本…</div>
+  <div id="bw-update-bar" style="display:none;position:fixed;left:0;right:0;top:0;z-index:9999;background:#ff9f43;color:#fff;font-size:13px;padding:8px 12px;text-align:center;cursor:pointer;"></div>
+  <script>
+    /* ===== 版本自检 + 缓存自愈 =====
+       旧版把版本号写死在 HTML 里，导致左下角永远显示旧版本、用户误以为没更新。
+       现在：真实版本由 JS 动态写入，并主动比对线上 version.json；
+       若发现本机跑的是旧代码，自动注销 Service Worker + 清空缓存并重载（不会丢失本机数据）。 */
+    window.__BW_BUILD__ = '20261017-28';
+    (function () {
+      var BUILD = window.__BW_BUILD__;
+      var barEl = null;
+      function show(txt, color) {
+        var el = document.getElementById('bw-version');
+        if (el) { el.textContent = txt; if (color) el.style.color = color; }
+      }
+      function bar(txt, onClick) {
+        barEl = document.getElementById('bw-update-bar');
+        if (!barEl) return;
+        barEl.textContent = txt;
+        barEl.style.display = 'block';
+        barEl.onclick = onClick;
+      }
+      show('v' + BUILD + ' 检查更新…');
+      // 强制更新：注销 SW + 清空缓存 + 带时间戳重载（不清 localStorage/IndexedDB，本机数据不丢）
+      window.BWForceUpdate = function (auto) {
+        var key = 'bw_force_update_count';
+        var n = 0;
+        try { n = parseInt(sessionStorage.getItem(key) || '0', 10) || 0; } catch (e) {}
+        if (auto && n >= 2) {
+          try { sessionStorage.removeItem(key); } catch (e) {}
+          bar('自动更新两次仍未生效，点此手动强制更新', function () { window.BWForceUpdate(false); });
+          show('v' + BUILD + ' ⚠️ 非最新', '#ff9f43');
+          return;
+        }
+        try { sessionStorage.setItem(key, String(n + 1)); } catch (e) {}
+        var jobs = [];
+        if ('serviceWorker' in navigator) {
+          jobs.push(navigator.serviceWorker.getRegistrations()
+            .then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); })
+            .catch(function () {}));
+        }
+        if (window.caches) {
+          jobs.push(caches.keys()
+            .then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); })
+            .catch(function () {}));
+        }
+        Promise.all(jobs).then(function () {
+          var base = location.pathname;
+          // 先尝试直接重载（保持网址干净）；失败场景由下一次自检再带时间戳
+          try { location.replace(base + '?_up=' + Date.now()); }
+          catch (e) { location.reload(); }
+        });
+      };
+      // 自动更新后把地址里的临时参数去掉，保证网址始终干净
+      if (location.search.indexOf('_up=') !== -1) {
+        try { history.replaceState(null, '', location.pathname); } catch (e) {}
+      }
+      // 比对线上版本
+      try {
+        fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var v = j && j.v;
+            window.__BW_LATEST__ = v || BUILD;
+            if (!v) { show('v' + BUILD); return; }
+            if (v === BUILD) {
+              show('v' + BUILD + ' ✅ 最新');
+            } else {
+              show('发现新版 v' + v + '，正在更新…', '#ff9f43');
+              bar('🆕 正在更新到新版本，请稍候…', function () { window.BWForceUpdate(false); });
+              window.BWForceUpdate(true);
+            }
+          })
+          .catch(function () { show('v' + BUILD); });
+      } catch (e) { show('v' + BUILD); }
+    })();
+  </script>
   <div id="app">
     <!-- ========== Sidebar ========== -->
     <aside class="sidebar" id="sidebar">
@@ -125,18 +201,20 @@
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
-  <script src="js/config.js?v=20261017-27"></script>
-  <script src="js/store.js?v=20261017-27"></script>
-  <script src="js/parse-docx.js?v=20261017-27"></script>
-  <script src="js/exporter.js?v=20261017-27"></script>
-  <script src="js/app.js?v=20261017-27"></script>
+  <script src="js/config.js?v=20261017-28"></script>
+  <script src="js/store.js?v=20261017-28"></script>
+  <script src="js/parse-docx.js?v=20261017-28"></script>
+  <script src="js/exporter.js?v=20261017-28"></script>
+  <script src="js/app.js?v=20261017-28"></script>
   <script>
     // PWA Service Worker 注册（手机安装 App / 离线使用）+ 发现新版本自动刷新
+    // 注册 URL 带版本号：版本变化时浏览器会当作新脚本重新下载安装（解决手机一直跑旧代码）
+    var __SW_URL = 'sw.js?v=' + (window.__BW_BUILD__ || '1');
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('sw.js').then(function (reg) {
+        navigator.serviceWorker.register(__SW_URL).then(function (reg) {
           console.log('SW registered:', reg.scope);
-          // 每次打开主动检查新版本（绕过 sw.js 的 10 分钟 HTTP 缓存窗口）
+          // 每次打开主动检查新版本（绕过 sw.js 的 HTTP 缓存窗口）
           try { reg.update(); } catch (e) {}
           // 新 SW 安装完成（sw.js 内 skipWaiting 会立即激活）
           reg.addEventListener('updatefound', function () {
@@ -152,8 +230,11 @@
           console.warn('SW register failed:', err);
         });
         // 新 SW 接管页面 → 自动刷新一次，确保所有设备立刻跑新代码
+        // 注意：首次安装（原本没有 controller）不刷新，避免刚打开就白屏重载
         var __refreshing = false;
+        var __hadController = !!navigator.serviceWorker.controller;
         navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (!__hadController) { __hadController = true; return; }
           if (__refreshing) return;
           __refreshing = true;
           try { sessionStorage.setItem('bw_updated', '1'); } catch (e) {}

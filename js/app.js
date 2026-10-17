@@ -1854,7 +1854,14 @@ const App = {
         </div>
         <div class="settings-row">
           <label>版本</label>
-          <span class="settings-value">v1.7.0（云同步版）</span>
+          <span class="settings-value">v1.7.0 · 构建 ${window.__BW_BUILD__ || '-'}</span>
+        </div>
+        <div class="settings-row">
+          <label>检查更新</label>
+          <button class="btn btn-sm btn-secondary" onclick="App.forceUpdate()">🔄 强制更新（清缓存重载）</button>
+        </div>
+        <div style="margin-top:8px;padding:10px;background:var(--primary-bg);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);">
+          手机端如果发现页面还是旧样子：点上面「强制更新」即可，<b>不会删除本机数据</b>（不清 localStorage/文件）。
         </div>
         <div class="settings-row">
           <label>支持格式</label>
@@ -1895,6 +1902,28 @@ const App = {
       if (statusEl) statusEl.textContent = '⚠️ 同步失败';
       this.toast('同步失败：' + String(e), 'error');
     }
+  },
+
+  // ===== 强制更新：注销 Service Worker + 清空缓存并重载（保留本机数据） =====
+  forceUpdate() {
+    this.showConfirm('🔄 强制更新', '将清除浏览器缓存并重新加载最新版本（不会删除本机数据和文件），确定继续吗？', () => {
+      try {
+        if (typeof window.BWForceUpdate === 'function') { window.BWForceUpdate(false); return; }
+      } catch (e) {}
+      // 兜底：手动清缓存后重载
+      var jobs = [];
+      if ('serviceWorker' in navigator) {
+        jobs.push(navigator.serviceWorker.getRegistrations()
+          .then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); })
+          .catch(function () {}));
+      }
+      if (window.caches) {
+        jobs.push(caches.keys()
+          .then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); })
+          .catch(function () {}));
+      }
+      Promise.all(jobs).then(function () { location.replace(location.pathname + '?_up=' + Date.now()); });
+    });
   },
 
   resetData() {

@@ -1,5 +1,12 @@
-/* 班委工作台 Service Worker - PWA 离线支持 */
-const CACHE_NAME = 'class-workbench-v31';
+/* 班委工作台 Service Worker - PWA 离线支持
+   策略说明（v32 起）：
+   - 自身 JS/CSS/HTML 一律「网络优先 + 超时回退缓存」，确保每次打开都是最新代码，
+     只有断网或网络极慢时才用旧缓存兜底（离线仍可用）。
+   - 云同步请求（GitHub API / Gist / 代理）完全不拦截、不缓存，避免读到过期数据。
+*/
+const CACHE_NAME = 'class-workbench-v32';
+// 网络优先的等待上限：超过这个时间还没拿到网络响应，就用缓存兜底（保证弱网也能秒开）
+const NET_TIMEOUT = 2500;
 
 // 云同步相关域名：数据请求一律直连网络，绝不缓存（否则设备会一直读到过期云端数据）
 const CLOUD_HOSTS = [
@@ -31,22 +38,64 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(CORE_ASSETS))
+      .catch(() => {})
       .then(() => self.skipWaiting())
   );
 });
 
-// 激活：清理旧版本缓存
+// 激活：清理所有旧版本缓存（不再局限于已知名字，避免历史残留导致页面一直跑旧代码）
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.map((key) => (key === CACHE_NAME ? null : caches.delete(key)))
       ))
       .then(() => self.clients.claim())
   );
 });
 
-// 请求拦截：缓存优先，回退网络并更新缓存；失败时回退缓存
+// 收到页面指令：立即接管（用于"强制更新"）
+self.addEventListener('message', (event) => {
+  if (event && event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+// 网络优先：给定时间内拿不到网络响应就用缓存兜底
+function networkFirst(req, cacheFallbackQuery) {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      caches.match(cacheFallbackQuery || req).then((c) => {
+        if (c) { resolve(c); return; }
+        resolve(fetch(req));
+      });
+    }, NET_TIMEOUT);
+    fetch(req).then((res) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (res && res.ok) {
+        try {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
+        } catch (e) {}
+      }
+      resolve(res);
+    }).catch(() => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      caches.match(cacheFallbackQuery || req).then((c) => {
+        resolve(c || caches.match('./index.html'));
+      });
+    });
+  });
+}
+
+// 请求拦截
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   // 只处理 GET
@@ -58,43 +107,37 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // 版本文件：绝不缓存，永远取最新（用于页面判断是否是最新代码）
+  if (url.pathname.indexOf('version.json') !== -1) {
+    event.respondWith(fetch(req, { cache: 'no-store' }));
+    return;
+  }
+
   // 同源自身资源
   if (url.origin === self.location.origin) {
-    // HTML 文档：网络优先（每次拿最新版，避免旧缓存导致功能异常），失败才用缓存
+    // HTML 文档：网络优先（每次拿最新版），超时/失败才用缓存
     const isDocument = req.destination === 'document' ||
       url.pathname === '/' || url.pathname.endsWith('/index.html');
     if (isDocument) {
-      event.respondWith(
-        fetch(req).then((res) => {
-          if (res && res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-          }
-          return res;
-        }).catch(() => caches.match(req).then((c) => c || caches.match('./index.html')))
-      );
+      event.respondWith(networkFirst(req, './index.html'));
       return;
     }
-    // 静态资源：缓存优先，后台更新（stale-while-revalidate）
+    // JS / CSS：网络优先 + 超时回退缓存。
+    // （旧策略是"先返回缓存再后台更新"，导致手机上第一次打开永远是旧代码）
+    if (req.destination === 'script' || req.destination === 'style' ||
+        /\.(js|css)(\?|$)/.test(url.pathname)) {
+      event.respondWith(networkFirst(req));
+      return;
+    }
+    // 其余资源（图片/图标等）：缓存优先（几乎不变，省流量）
     event.respondWith(
-      caches.match(req).then((cached) => {
-        if (cached) {
-          // 后台更新缓存（stale-while-revalidate）
-          fetch(req).then((res) => {
-            if (res && res.ok && res.type === 'basic') {
-              caches.open(CACHE_NAME).then((cache) => cache.put(req, res.clone()));
-            }
-          }).catch(() => {});
-          return cached;
+      caches.match(req).then((cached) => cached || fetch(req).then((res) => {
+        if (res && res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
         }
-        return fetch(req).then((res) => {
-          if (res && res.ok && res.type === 'basic') {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-          }
-          return res;
-        }).catch(() => caches.match('./index.html'));
-      })
+        return res;
+      }))
     );
     return;
   }
@@ -104,7 +147,7 @@ self.addEventListener('fetch', (event) => {
     fetch(req).then((res) => {
       if (res && res.ok) {
         const clone = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
       }
       return res;
     }).catch(() => caches.match(req))

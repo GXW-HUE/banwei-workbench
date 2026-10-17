@@ -8,6 +8,7 @@ const Store = {
   INIT_KEY: 'class_workbench_initialized',
   VERSION_KEY: 'class_workbench_data_version',
   DATA_VERSION: '1.7.0',
+  SHARD_COUNT_KEY: 'class_workbench_blob_shards',   // 上次推送的内容分片数量（用于清理多余旧分片）
 
   // ===== 云同步配置 (GitHub Gist) =====
   CLOUD: {
@@ -296,7 +297,12 @@ const Store = {
         Object.keys(gist.files).forEach(n => {
           if (n === 'data.json') return;
           if (n.indexOf('files_blob') === 0) {
-            try { const j = JSON.parse(gist.files[n].content || '{}'); if (j && j.files) Object.assign(filesData, j.files); } catch (e) {}
+            try {
+              const j = JSON.parse(gist.files[n].content || '{}');
+              // 兼容两种落盘格式：{ files: {...} } 与裸映射 {...}
+              const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
+              if (map && typeof map === 'object') Object.assign(filesData, map);
+            } catch (e) {}
           }
         });
       } else {
@@ -304,16 +310,25 @@ const Store = {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         data = JSON.parse(await resp.text());
         // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
+        // 另外兜底多探 2 个分片：清单本身可能因上次推送失败而未更新（防止漏拉导致文件内容缺失）
         const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards : ['files_blob.json'];
-        await Promise.all(shardNames.map(async (nm) => {
+        const extra = [];
+        for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i);
+        await Promise.all(shardNames.concat(extra).map(async (nm) => {
           try {
             const r = await fetch(ch.base + nm + '?t=' + Date.now(), { signal: ctl.signal, headers: _headers });
-            if (r.ok) { const j = JSON.parse(await r.text()); if (j && j.files) Object.assign(filesData, j.files); }
+            if (r.ok) {
+              const j = JSON.parse(await r.text());
+              const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
+              if (map && typeof map === 'object') Object.assign(filesData, map);
+            }
           } catch (e) { /* 单分片失败不致命 */ }
         }));
       }
       // filesData 本身就是 { 文件id: 内容 } 的映射，直接作为 cloudData.files 供后续合并恢复
       data.files = filesData || {};
+      // 记住云端分片清单：本机暂无内容时推送不会清空清单，保证其他设备仍能定位到分片
+      if (data._blobShards && data._blobShards.length) this.CLOUD._lastShards = data._blobShards;
       return { success: true, hasData: true, data, channel: ch.name };
     } finally {
       clearTimeout(timer);
@@ -751,39 +766,60 @@ const Store = {
   _safeCollectAllData() {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
-    // 收集所有本机有内容的文件，按体积从大到小贪心装入分片（保证单片 < SHARD_MAX 字符）
-    const SHARD_MAX = 900000;   // Gist 单文件约 1MB（字符）上限，留安全余量
-    const MAX_SINGLE = 1000000; // 单文件 base64 上限（约 750KB 原始）；超大文件无法上云，仅留本机
-    // 单文件超过 GitHub 上限的，直接降级（不进分片），避免单片超限导致整次 PATCH 失败、连累其他文件
-    const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0 && f.content.length <= MAX_SINGLE);
-    withContent.sort((a, b) => b.content.length - a.content.length);
+    // 分片参数：Gist 单文件约 1MB（字符）上限，留足安全余量
+    const SHARD_MAX = 860000;   // 单个分片最大字符数
+    const CHUNK = 420000;       // 单个内容块最大字符数（大文件按此切块，可跨多个分片存放）
+    // 所有本机有内容的文件一律上云（不再因"单文件过大"直接降级）：
+    // 先切成固定大小的块，再贪心装箱到分片里，因此任意大小的文件都能同步到云端。
+    const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
+    // 按体积从大到小装箱，减少碎片
+    const blocks = [];
+    withContent.forEach(f => {
+      const c = f.content;
+      if (c.length <= CHUNK) {
+        blocks.push({ key: f.id, s: c });
+      } else {
+        const n = Math.ceil(c.length / CHUNK);
+        for (let i = 0; i < n; i++) {
+          blocks.push({ key: f.id + '|' + i, s: c.substr(i * CHUNK, CHUNK) });
+        }
+      }
+    });
+    blocks.sort((a, b) => b.s.length - a.s.length);
     const shards = [];
     let cur = {}, curLen = 0;
-    withContent.forEach(f => {
-      const len = f.content.length;
-      if (curLen > 0 && curLen + len > SHARD_MAX) { shards.push(cur); cur = {}; curLen = 0; }
-      cur[f.id] = f.content;
-      curLen += len;
+    blocks.forEach(b => {
+      if (curLen > 0 && curLen + b.s.length > SHARD_MAX) { shards.push(cur); cur = {}; curLen = 0; }
+      cur[b.key] = b.s;
+      curLen += b.s.length;
     });
     if (curLen > 0) shards.push(cur);
-    // _files 剥离 content（内容已拆到分片）；超大单文件标记 cloudLimited=true 仅留本机，不进分片
+    // _files 剥离 content（内容已拆到分片）；本机无内容的文件保持 cloudLimited=true（等上传设备补传）
     data._files = files.map(f => {
-      if (typeof f.content === 'string' && f.content.length > MAX_SINGLE) {
-        return Object.assign({}, f, { content: null, cloudLimited: true });
-      }
       if (typeof f.content === 'string' && f.content.length > 0) {
         return Object.assign({}, f, { content: null, cloudLimited: false });
       }
       return f;
     });
     const shardNames = shards.map((s, i) => 'files_blob_' + i);
-    data._blobShards = shardNames;   // 记录分片清单，供拉取端定位所有分片
+    // 本机暂无任何文件内容时，绝不能把清单清空（否则其他设备下次会找不到云端分片），沿用上次云端清单
+    data._blobShards = shards.length > 0 ? shardNames
+      : (this.CLOUD._lastShards && this.CLOUD._lastShards.length ? this.CLOUD._lastShards : (data._blobShards || ['files_blob.json']));
     const filesPayload = {};
-    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify(shards[i]); });
+    // 统一包装成 { files: {...} }，与拉取端解析格式一致
+    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify({ files: shards[i] }); });
     // 仅当本次确有文件内容分片上云时，才删除旧版单一 files_blob.json；
     // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
+    // 同时清理掉本次不再需要的多余旧分片（例如文件变少导致分片数减少），防止残留旧内容混淆。
     if (shards.length > 0) {
       filesPayload['files_blob.json'] = null;
+      try {
+        const prev = Number(localStorage.getItem(this.SHARD_COUNT_KEY) || 0);
+        for (let i = shards.length; i < Math.max(prev, shards.length + 5); i++) {
+          filesPayload['files_blob_' + i] = null;
+        }
+      } catch (e) {}
+      try { localStorage.setItem(this.SHARD_COUNT_KEY, String(shards.length)); } catch (e) {}
     }
     return { data, filesPayload };
   },
@@ -812,7 +848,9 @@ const Store = {
         if (typeof cf.content === 'string' && cf.content.length > 0) {
           content = cf.content;                       // 旧格式：content 直接带在元数据上
         } else if (fileContents[cf.id] && typeof fileContents[cf.id] === 'string') {
-          content = fileContents[cf.id];              // 新格式：content 在独立文件
+          content = fileContents[cf.id];              // 新格式：content 在独立文件（未分块）
+        } else {
+          content = this._joinChunks(fileContents, cf.id);   // 大文件：按块 id|0 / id|1 ... 拼接还原
         }
         if (content) {
           return Object.assign({}, cf, { content, cloudLimited: false });
@@ -850,6 +888,14 @@ const Store = {
     if (cloudData.lastModified) {
       this._setLocalModified(cloudData.lastModified);
     }
+  },
+
+  // 大文件内容按块还原：分片中存的是 id|0、id|1 ... 依次拼接
+  _joinChunks(map, id) {
+    if (!map || !id) return null;
+    let out = '', i = 0;
+    while (typeof map[id + '|' + i] === 'string') { out += map[id + '|' + i]; i++; }
+    return i > 0 ? out : null;
   },
 
   // ===== 云端数据双向合并（按记录 ID + 删除墓碑 + 时间戳） =====
