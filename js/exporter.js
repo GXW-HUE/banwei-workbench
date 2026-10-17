@@ -406,8 +406,8 @@ const Exporter = {
             continue;
           }
         } else if (fileInfo.cloudLimited) {
-          console.warn('文件内容仅保存在上传设备:', fileInfo.name);
-          App.toast(`⚠️ ${fileInfo.name} 较大，完整内容仅保存在上传设备，已跳过导出`, 'warning');
+          console.warn('文件内容尚未同步到云端（仅存在上传设备）:', fileInfo.name);
+          App.toast(`⚠️ ${fileInfo.name} 的内容还没上传到云端，已跳过。请在原上传设备打开网站联网停留十几秒自动补传，或重新上传该文件`, 'warning');
           continue;
         }
       }
@@ -1765,8 +1765,8 @@ const Exporter = {
       return;
     }
     if (fileInfo.cloudLimited) {
-      // 云端降级文件：内容仅保存在上传设备（本设备无文件内容）
-      App.toast('⚠️ 该文件较大，完整内容仅保存在上传设备。请在上传设备上查看或导出', 'warning');
+      // 云端无内容：该文件内容只存在于原上传设备（本设备 IndexedDB 里没有）
+      App.toast('⚠️ 该文件内容还没同步到云端，本设备无法打开。请在原上传设备打开网站联网停留十几秒自动补传，或重新上传一次', 'warning');
       return;
     }
     // 否则重新导出

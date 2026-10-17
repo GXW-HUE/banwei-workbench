@@ -1799,6 +1799,14 @@ const App = {
         </div>
         <div style="margin-top:12px;padding:10px;background:var(--primary-bg);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);">
           💡 数据自动同步到云端，在任何设备打开网址都能看到相同数据。修改后约3秒自动上传。
+          ${(() => {
+            const fs = Store.getFiles() || [];
+            const miss = fs.filter(f => !(typeof f.content === 'string' && f.content.length > 0)).length;
+            if (!miss) return '';
+            return `<br>⚠️ 有 <b>${miss}</b> 个文件的内容还没同步到云端（其它设备打开时无法预览/导出原文件）。`
+              + '请在<b>原来上传这些文件的那台设备</b>上打开本网站并联网停留十几秒，系统会自动补传；'
+              + '若原设备已找不到，请直接重新上传一次。';
+          })()}
         </div>
       </div>
 
@@ -1811,6 +1819,14 @@ const App = {
         <div class="settings-row">
           <label>导出文件数</label>
           <span class="settings-value">${Store.getFiles().length} 个</span>
+        </div>
+        <div class="settings-row">
+          <label>文件内容已上云</label>
+          <span class="settings-value">${(() => {
+            const fs = Store.getFiles() || [];
+            const ok = fs.filter(f => typeof f.content === 'string' && f.content.length > 0).length;
+            return ok + ' / ' + fs.length + ' 个' + (ok < fs.length ? ' ⚠️' : ' ✅');
+          })()}</span>
         </div>
         <div class="settings-row">
           <label>数据存储位置</label>
