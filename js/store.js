@@ -263,13 +263,14 @@ const Store = {
   _buildChannels() {
     const ts = Date.now();
     const raw = 'https://gist.githubusercontent.com/' + this.CLOUD.owner + '/' + this.CLOUD.gistId + '/raw/data.json?t=' + ts;
+    const filesRaw = 'https://gist.githubusercontent.com/' + this.CLOUD.owner + '/' + this.CLOUD.gistId + '/raw/files_blob.json?t=' + ts;
     return [
-      { name: 'gh-proxy',   url: 'https://gh-proxy.com/' + raw, api: false },
-      { name: 'ghfast',     url: 'https://ghfast.top/' + raw, api: false },
-      { name: 'raw',        url: raw, api: false },
+      { name: 'gh-proxy',   url: 'https://gh-proxy.com/' + raw, filesUrl: 'https://gh-proxy.com/' + filesRaw, api: false },
+      { name: 'ghfast',     url: 'https://ghfast.top/' + raw, filesUrl: 'https://ghfast.top/' + filesRaw, api: false },
+      { name: 'raw',        url: raw, filesUrl: filesRaw, api: false },
       { name: 'api',        url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
         headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } },
-      { name: 'ghproxy-net', url: 'https://ghproxy.net/' + raw, api: false }
+      { name: 'ghproxy-net', url: 'https://ghproxy.net/' + raw, filesUrl: 'https://ghproxy.net/' + filesRaw, api: false }
     ];
   },
 
@@ -277,20 +278,31 @@ const Store = {
   async _fetchOneChannel(ch, timeoutMs, controller) {
     const ctl = controller || new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const _headers = Object.assign({ 'User-Agent': 'banwei-workbench', 'Accept': 'application/json' }, ch.headers || {});
     try {
-      const resp = await fetch(ch.url, {
-        signal: ctl.signal,
-        headers: Object.assign({ 'User-Agent': 'banwei-workbench', 'Accept': 'application/json' }, ch.headers || {})
-      });
+      const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const txt = await resp.text();
+      // 同时拉取独立存储的文件内容（files_blob.json）；失败不致命，降级为仅本机有内容的文件
+      let filesData = {};
+      try {
+        const fresp = await fetch(ch.filesUrl, { signal: ctl.signal, headers: _headers });
+        if (fresp.ok) {
+          const ftxt = await fresp.text();
+          if (ftxt && ftxt.trim()) filesData = JSON.parse(ftxt) || {};
+        }
+      } catch (e) { /* files_blob 缺失或拉取失败：本机有内容的文件仍可正常用 */ }
+      const mergeFiles = (data) => {
+        if (data && typeof data === 'object') data.files = filesData.files || {};
+        return data;
+      };
       if (ch.api) {
         const gist = JSON.parse(txt);
         const file = gist.files && gist.files['data.json'];
         if (!file || !file.content) return { success: true, hasData: false };
-        return { success: true, hasData: true, data: JSON.parse(file.content), channel: ch.name };
+        return { success: true, hasData: true, data: mergeFiles(JSON.parse(file.content)), channel: ch.name };
       }
-      return { success: true, hasData: true, data: JSON.parse(txt), channel: ch.name };
+      return { success: true, hasData: true, data: mergeFiles(JSON.parse(txt)), channel: ch.name };
     } finally {
       clearTimeout(timer);
     }
@@ -473,12 +485,16 @@ const Store = {
         this.CLOUD.syncStatus = 'pushing';
         this._updateIndicator();
         const allData = this._safeCollectAllData();
-        allData.lastModified = new Date().toISOString();
-        this._setLocalModified(allData.lastModified);
+        allData.data.lastModified = new Date().toISOString();
+        this._setLocalModified(allData.data.lastModified);
+        allData.filesPayload.lastModified = allData.data.lastModified;
         const body = {
           files: {
             'data.json': {
-              content: JSON.stringify(allData, null, 2)
+              content: JSON.stringify(allData.data, null, 2)
+            },
+            'files_blob.json': {
+              content: JSON.stringify(allData.filesPayload)
             }
           }
         };
@@ -528,9 +544,15 @@ const Store = {
     if (!this.CLOUD.cloudMerged) return;
     try {
       const allData = this._safeCollectAllData();
-      allData.lastModified = new Date().toISOString();
-      this._setLocalModified(allData.lastModified);
-      const body = JSON.stringify({ files: { 'data.json': { content: JSON.stringify(allData, null, 2) } } });
+      allData.data.lastModified = new Date().toISOString();
+      this._setLocalModified(allData.data.lastModified);
+      allData.filesPayload.lastModified = allData.data.lastModified;
+      const body = JSON.stringify({
+        files: {
+          'data.json': { content: JSON.stringify(allData.data, null, 2) },
+          'files_blob.json': { content: JSON.stringify(allData.filesPayload) }
+        }
+      });
       // keepalive：页面关闭/切后台后请求仍会继续完成
       fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
         method: 'PATCH',
@@ -716,39 +738,42 @@ const Store = {
     return n;
   },
 
-  // ===== 推送前安全化：剔除超大文件内容，保证云端 JSON 不超 GitHub 限制损坏 =====
+  // ===== 推送前安全化：把文件内容单独剥离到 files_blob.json，data.json 只留元数据 =====
+  // 背景：文件 base64 内容若与数据一起塞进 data.json，会快速逼近 Gist 单文件 ~1MB 上限，
+  //       导致后上传/较大的文件被降级为 cloudLimited（内容只留本机），无法跨设备预览/导出。
+  // 解决：文件内容单独存到 files_blob.json（独立 1MB 预算），data.json 体积大幅瘦身，
+  //       绝大多数文档都能上云，仅真正的超大文件（>~750KB 原始）才降级到本机。
   _safeCollectAllData() {
     const data = this._collectAllData();
-    // GitHub Gist 单文件上限约 1MB，JSON 字符串留安全余量（防止中文/Base64 超字节限制被截断损坏）
-    const MAX = 650000;
     const files = Array.isArray(data._files) ? data._files : [];
-    // 关键：文件内容现已存放在 IndexedDB，总量可能达数百 MB。
-    // 若沿用"整包 JSON.stringify"来测体积，会把所有 base64 拼成一个巨型字符串，
-    // 瞬间吃满内存并卡死页面。改为：先用"不含内容"的副本量基础体积，再按预算装入小文件。
-    const shell = Object.assign({}, data);
-    shell._files = files.map(f => Object.assign({}, f, { content: null }));
-    const base = JSON.stringify(shell).length;
-    let budget = MAX - base;
-    // 小文件优先上云；放不下的剔除内容并标记 cloudLimited（完整内容仍在本机 IndexedDB）
+    const contentById = {};
+    // files_blob.json 独立预算：Gist 单文件约 1MB，留安全余量（base64 体积 ×1.33 估算）
+    const FILE_MAX = 900000;
+    // 仅按"文件内容体积"预算（data.json 剥离内容后仅 ~100KB，无需再占预算）
     const withSize = files
       .map((f, i) => ({ i: i, len: (f && typeof f.content === 'string') ? f.content.length : 0 }))
       .filter(x => x.len > 0)
       .sort((a, b) => a.len - b.len);
+    let used = 0;
     const keep = {};
     withSize.forEach(item => {
-      if (budget - item.len >= 0) { budget -= item.len; keep[item.i] = true; }
+      if (used + item.len <= FILE_MAX) { used += item.len; keep[item.i] = true; }
     });
     let removed = 0;
     data._files = files.map((f, i) => {
       if (!f || typeof f.content !== 'string' || f.content.length === 0) return f;
-      if (keep[i]) return f;
+      if (keep[i]) {
+        contentById[f.id] = f.content;          // 文件内容单独上云
+        return Object.assign({}, f, { content: null, cloudLimited: false });
+      }
       removed++;
-      return Object.assign({}, f, { content: null, cloudLimited: true });  // 标记：内容仅保存在上传设备
+      return Object.assign({}, f, { content: null, cloudLimited: true });  // 超大文件：内容仅保存在上传设备
     });
     if (removed > 0) {
       console.warn(`云端存储已满，${removed} 个超大文件的内容仅保存在上传设备（其他设备可看到文件名，完整文件请在上传设备查看/导出）`);
     }
-    return data;
+    const filesPayload = { files: contentById };
+    return { data, filesPayload };
   },
 
   // ===== 从云端数据恢复到本地 =====
@@ -767,14 +792,23 @@ const Store = {
       }
     });
     if (cloudData._files !== undefined) {
-      // content 保护：云端降级文件（content=null）不能冲掉本机保存的完整文件内容
+      // 文件内容来源：1) 旧格式内联在 data.json._files[].content；2) 新格式独立存于 files_blob.json（cloudData.files）
       const localFiles = this.getFiles();
+      const fileContents = cloudData.files || {};
       const protectedFiles = (cloudData._files || []).map(cf => {
-        if ((cf.content === null || cf.content === undefined) && cf.cloudLimited) {
-          const lf = localFiles.find(f => f.id === cf.id);
-          if (lf && lf.content) {
-            return Object.assign({}, cf, { content: lf.content, cloudLimited: false });
-          }
+        let content = null;
+        if (typeof cf.content === 'string' && cf.content.length > 0) {
+          content = cf.content;                       // 旧格式：content 直接带在元数据上
+        } else if (fileContents[cf.id] && typeof fileContents[cf.id] === 'string') {
+          content = fileContents[cf.id];              // 新格式：content 在独立文件
+        }
+        if (content) {
+          return Object.assign({}, cf, { content, cloudLimited: false });
+        }
+        // 云端无内容（超大文件降级 cloudLimited）：本机有则保留，保证上传设备仍可预览/导出
+        const lf = localFiles.find(f => f.id === cf.id);
+        if (lf && lf.content) {
+          return Object.assign({}, cf, { content: lf.content, cloudLimited: false });
         }
         return cf;
       });
@@ -886,6 +920,7 @@ const Store = {
 
     out._deleted = tombs;
     out.lastModified = cloudData.lastModified || new Date().toISOString();
+    out.files = cloudData.files || {};   // 附带独立存储的文件内容（files_blob.json）
     this._applyCloudData(out);
     try { localStorage.setItem(this.SYNC_KEY, String(Date.now())); } catch (e) {}
     this._markMerged();

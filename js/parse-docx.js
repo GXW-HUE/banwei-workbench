@@ -100,6 +100,37 @@ const DocxParser = {
     return '';
   },
 
+  // 从文本提取班会主题
+  extractTheme(text) {
+    if (!text) return '';
+    const t = String(text).trim();
+    let m = t.match(/(?:班会主题|主题)[：:]\s*([^\n]{1,60}?)\s*(?=班会内容|主持人|参加|时间|地点|班级|\n|$)/);
+    if (m) return m[1].trim();
+    return '';
+  },
+
+  // 从文本提取主持人
+  extractHost(text) {
+    if (!text) return '';
+    const t = String(text).trim();
+    let m = t.match(/主持人[：:]\s*([^\n]{1,20}?)\s*(?=参加人数|地点|时间|班级|班会内容|班会主题|\n|$)/);
+    if (m) return m[1].trim();
+    return '';
+  },
+
+  // 从文本提取参加人数
+  extractAttendees(text) {
+    if (!text) return '';
+    const t = String(text).trim();
+    // 模式1：参加人数/实到人数/应到人数：45人
+    let m = t.match(/(?:参加人数|实到人数|应到人数)[：:]?\s*(\d+)\s*人?/);
+    if (m) return parseInt(m[1]);
+    // 模式2：从"应到XX人，实到XX人"取实到
+    m = t.match(/实到[^\d]*(\d+)/);
+    if (m) return parseInt(m[1]);
+    return '';
+  },
+
   // 从文本提取参与人员/被谈话人姓名
   extractParticipantName(text) {
     if (!text) return '';
@@ -156,11 +187,14 @@ const DocxParser = {
 
   parseMeeting(text, fileName) {
     let date = this.findDate(text) || new Date().toISOString().slice(0,10);
+    let theme = this.extractTheme(text) || fileName || '';
+    let host = this.extractHost(text);
+    let attendees = this.extractAttendees(text);
     return [{
       date: date,
-      theme: fileName || '',
-      host: '',
-      attendees: '',
+      theme: theme,
+      host: host,
+      attendees: attendees,
       content: text,
       effect: '',
       status: '已开展'
