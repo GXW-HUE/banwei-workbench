@@ -1828,11 +1828,19 @@ const App = {
           <span class="settings-value">${Store.getFiles().length} 个</span>
         </div>
         <div class="settings-row">
+<<<<<<< HEAD
           <label>文件内容已上云</label>
           <span class="settings-value">${(() => {
             const fs = Store.getFiles() || [];
             const ok = fs.filter(f => typeof f.content === 'string' && f.content.length > 0).length;
             return ok + ' / ' + fs.length + ' 个' + (ok < fs.length ? ' ⚠️' : ' ✅');
+=======
+          <label>本机文件内容完整度</label>
+          <span class="settings-value">${(() => {
+            const fs = Store.getFiles() || [];
+            const ok = fs.filter(f => f.hasContent || (typeof f.content === 'string' && f.content.length > 0)).length;
+            return ok + ' / ' + fs.length + ' 个' + (ok < fs.length ? ' ⚠️ 有缺失' : ' ✅');
+>>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
           })()}</span>
         </div>
         <div class="settings-row">
@@ -1854,6 +1862,18 @@ const App = {
         <div class="settings-row">
           <label>导出全部数据（Excel/Word/PDF/PPT）</label>
           <button class="btn btn-sm btn-success" onclick="App.openExportModal('all')">📤 选择格式导出</button>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h3>☁️ 云端文件内容修复</h3>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+          某些附件在别的设备上显示“内容还没同步到云端”，是因为它的原始内容只存在当初上传的那台设备本机。
+          <b>请在「还能正常预览/下载这些文件」的那台设备上打开本网站，点下面按钮</b>，即可把本机所有文件内容一次性补传到云端，其他设备随后自动同步。
+        </div>
+        <div class="settings-row">
+          <label>强制补传全部文件内容</label>
+          <button class="btn btn-sm btn-primary" onclick="App.forceUploadFiles()">🔄 一键补传</button>
         </div>
       </div>
 
@@ -1949,6 +1969,29 @@ const App = {
     });
   },
 
+<<<<<<< HEAD
+=======
+  // ===== 一键补传：把本机所有文件内容强制上传到云端 =====
+  async forceUploadFiles() {
+    const Store = window.Store;
+    if (!Store || typeof Store.pushToCloud !== 'function') { this.toast('同步模块未就绪', 'error'); return; }
+    this.toast('正在把本机文件内容补传到云端…', 'info');
+    try { await Store._refreshContentCache(); } catch (e) {}
+    // 标记脏并触发推送（pull-before-push 会先合并云端，再把本机全部内容带上云）
+    try { Store._setDirty(); } catch (e) {}
+    let r;
+    try { r = await Store.pushToCloud(); } catch (e) { r = { success: false }; }
+    if (r && r.success) {
+      this.toast('补传完成！其他设备联网后会自动同步这些文件内容', 'success');
+    } else if (r && (r.reason === 'busy' || r.reason === 'pulling')) {
+      this.toast('正在同步中，请稍候再点一次', 'info');
+    } else {
+      this.toast('补传失败（' + (r && r.reason ? r.reason : '网络异常') + '），请检查网络后重试', 'error');
+    }
+    if (typeof this.renderModule === 'function') { try { this.renderModule('settings'); } catch (e) {} }
+  },
+
+>>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
   resetData() {
     this.showConfirm('重置数据', '确定要重置为示例数据吗？当前数据将被覆盖！', () => {
       // 清除所有模块数据和文件中心

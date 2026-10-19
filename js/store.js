@@ -128,6 +128,19 @@ const Store = {
     });
   },
 
+  // 推送前：把 IndexedDB 中已落盘的文件内容全部刷新进内存缓存，
+  // 确保「从云端拉取得到内容、或本机曾打开过」的文件，在做整包 PATCH 时不会被从 files_blob 中漏掉。
+  // 这是修复“换设备/刷新后推送会丢掉别的设备文件内容”的根因。
+  async _refreshContentCache() {
+    if (!this._idbOk) return;
+    try {
+      const map = await this._idbGetAll();
+      if (map && typeof map === 'object') {
+        Object.keys(map).forEach(k => { if (map[k]) this._contentCache[k] = map[k]; });
+      }
+    } catch (e) {}
+  },
+
   // 清空文件内容库
   async _idbClear() {
     const db = await this._openDB();
@@ -511,6 +524,8 @@ const Store = {
         this.CLOUD.isSyncing = true;
         this.CLOUD.syncStatus = 'pushing';
         this._updateIndicator();
+        // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进 blob
+        try { await this._refreshContentCache(); } catch (e) {}
         const allData = this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
@@ -558,12 +573,14 @@ const Store = {
 
   // ===== 退出/切后台前的最后一次推送（keepalive，页面卸载也能发出请求） =====
   // 跳过冲突检测（dirty 本地优先），直接把本地全量数据 PATCH 到云端
-  flushBeforeHide() {
+  async flushBeforeHide() {
     if (!this.CLOUD.enabled || !this.CLOUD.dirty) return;
     if (this.CLOUD.isSyncing || this.CLOUD.pushInFlight) return;
     // 未完成首次云端数据合并前不直推（防止全新设备把不完整数据在关闭瞬间推上云端）
     if (!this.CLOUD.cloudMerged) return;
     try {
+      // 先刷新内容缓存，确保本机文件内容都带上云
+      try { await this._refreshContentCache(); } catch (e) {}
       const allData = this._safeCollectAllData();
       allData.data.lastModified = new Date().toISOString();
       this._setLocalModified(allData.data.lastModified);
