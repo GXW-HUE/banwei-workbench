@@ -1858,6 +1858,17 @@ const App = {
       </div>
 
       <div class="settings-card">
+        <h3>☁️ 云端数据恢复</h3>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+          如果某台设备（如手机）首页数字明显少于电脑，说明它没拉到最新云端数据。点下面按钮会忽略本机空数据，强制以云端完整数据为准恢复。
+        </div>
+        <div class="settings-row">
+          <label>强制从云端恢复记录</label>
+          <button class="btn btn-sm btn-primary" onclick="App.forceRestoreFromCloud()">☁️ 强制恢复</button>
+        </div>
+      </div>
+
+      <div class="settings-card">
         <h3>☁️ 云端文件内容修复</h3>
         <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
           某些附件在别的设备上显示“内容还没同步到云端”，是因为它的原始内容只存在当初上传的那台设备本机。
@@ -1937,6 +1948,34 @@ const App = {
       if (statusEl) statusEl.textContent = '⚠️ 同步失败';
       this.toast('同步失败：' + String(e), 'error');
     }
+  },
+
+  // ===== 强制从云端恢复：以云端为准覆盖本机记录（解决升级/缓存导致本机数据为空） =====
+  async forceRestoreFromCloud() {
+    const Store = window.Store;
+    if (!Store || !Store.CLOUD || !Store.CLOUD.enabled) {
+      this.toast('云端同步未启用，无法恢复', 'error'); return;
+    }
+    this.showConfirm('☁️ 强制从云端恢复', '将以云端数据为准覆盖本机记录（不会删除本机文件内容）。如果电脑上的数字是对的、手机上是空的，用这个功能恢复。确定继续吗？', async () => {
+      this.toast('正在从云端强制恢复…', 'info');
+      try {
+        const result = await Store.fetchFromCloud();
+        if (result && result.success && result.hasData && result.data) {
+          Store._applyCloudData(result.data);
+          Store._markMerged();
+          Store._setLocalModified(result.data.lastModified || new Date().toISOString());
+          localStorage.setItem(Store.SYNC_KEY, String(Date.now()));
+          this.toast('✅ 已从云端恢复数据', 'success');
+          this.renderModule(this.currentModule || 'dashboard');
+        } else if (result && result.success && !result.hasData) {
+          this.toast('⚠️ 云端没有数据可恢复', 'warning');
+        } else {
+          this.toast('⚠️ 云端拉取失败：' + (result && result.reason ? result.reason : '未知'), 'warning');
+        }
+      } catch (e) {
+        this.toast('恢复失败：' + String(e), 'error');
+      }
+    });
   },
 
   // ===== 强制更新：注销 Service Worker + 清空缓存并重载（保留本机数据） =====

@@ -4,7 +4,7 @@
      只有断网或网络极慢时才用旧缓存兜底（离线仍可用）。
    - 云同步请求（GitHub API / Gist / 代理）完全不拦截、不缓存，避免读到过期数据。
 */
-const CACHE_NAME = 'class-workbench-v36';
+const CACHE_NAME = 'class-workbench-v37';
 // 网络优先的等待上限：超过这个时间还没拿到网络响应，就用缓存兜底（保证弱网也能秒开）
 const NET_TIMEOUT = 2500;
 
