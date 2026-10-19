@@ -12,11 +12,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="班委工作台">
-<<<<<<< HEAD
   <link rel="stylesheet" href="css/style.css?v=20261019-31">
-=======
-  <link rel="stylesheet" href="css/style.css?v=20261019-31">
->>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
 <script async src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
 <script>
 (function(){
@@ -47,11 +43,7 @@
        旧版把版本号写死在 HTML 里，导致左下角永远显示旧版本、用户误以为没更新。
        现在：真实版本由 JS 动态写入，并主动比对线上 version.json；
        若发现本机跑的是旧代码，自动注销 Service Worker + 清空缓存并重载（不会丢失本机数据）。 */
-<<<<<<< HEAD
     window.__BW_BUILD__ = '20261019-31';
-=======
-    window.__BW_BUILD__ = '20261019-31';
->>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
     (function () {
       var BUILD = window.__BW_BUILD__;
       var barEl = null;
@@ -209,19 +201,11 @@
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
-<<<<<<< HEAD
   <script src="js/config.js?v=20261019-31"></script>
   <script src="js/store.js?v=20261019-31"></script>
   <script src="js/parse-docx.js?v=20261019-31"></script>
   <script src="js/exporter.js?v=20261019-31"></script>
   <script src="js/app.js?v=20261019-31"></script>
-=======
-  <script src="js/config.js?v=20261019-31"></script>
-  <script src="js/store.js?v=20261019-31"></script>
-  <script src="js/parse-docx.js?v=20261019-31"></script>
-  <script src="js/exporter.js?v=20261019-31"></script>
-  <script src="js/app.js?v=20261019-31"></script>
->>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
   <script>
     // PWA Service Worker 注册（手机安装 App / 离线使用）+ 发现新版本自动刷新
     // 注册 URL 带版本号：版本变化时浏览器会当作新脚本重新下载安装（解决手机一直跑旧代码）
