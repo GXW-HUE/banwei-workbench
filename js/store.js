@@ -300,7 +300,7 @@ const Store = {
     try {
       let data, filesData = {};
       if (ch.api) {
-        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
+        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const gist = JSON.parse(await resp.text());
         const file = gist.files && gist.files['data.json'];
@@ -319,7 +319,7 @@ const Store = {
           }
         });
       } else {
-        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
+        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         data = JSON.parse(await resp.text());
         // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
@@ -1034,14 +1034,10 @@ const Store = {
     await this._initFileStore();
 
     if (needsReload) {
-      Object.keys(MODULE_CONFIG).forEach(moduleId => {
-        localStorage.removeItem(this.getKey(moduleId));
-      });
-      localStorage.removeItem(this.FILE_PREFIX);
-      localStorage.removeItem(this.PREFIX + '_last_modified');
-      // 版本升级：同步清空 IndexedDB 内容，避免留下孤儿数据
-      this._contentCache = {};
-      this._idbClear();
+      // 版本升级时：不再清空本地记录（会导致用户数据“被清零”后无法恢复）。
+      // 仅重置文件内容缓存标记；文件元数据保留在 localStorage，由 _initFileStore 迁移。
+      // 如果某设备已被旧版本清空过，后台拉取云端后会自动恢复。
+      localStorage.setItem(this.VERSION_KEY, this.DATA_VERSION);
     }
 
     // 首次使用：先加载示例数据（直接写本地，不走 save，避免示例数据触发推送/修改时间；
