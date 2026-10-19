@@ -5,6 +5,9 @@
 
 const Exporter = {
 
+  // 防止同一个 cloudLimited 文件在 3 秒内重复弹出 toast
+  _cloudLimitedToastAt: {},
+
   // ===== 统一导出入口 =====
   // options: { recordIds: string[], openMode: boolean }
   exportFile(moduleId, format, options = {}) {
@@ -1766,6 +1769,11 @@ const Exporter = {
     }
     if (fileInfo.cloudLimited) {
       // 云端无内容：该文件内容只存在于原上传设备（本设备 IndexedDB 里没有）
+      // 3 秒内同一个文件不重复提示，避免用户双击卡片时弹出两次
+      const now = Date.now();
+      const id = fileInfo.id || fileInfo.name || 'unknown';
+      if (this._cloudLimitedToastAt[id] && now - this._cloudLimitedToastAt[id] < 3000) return;
+      this._cloudLimitedToastAt[id] = now;
       App.toast('⚠️ 该文件内容还没同步到云端，本设备无法打开。请在原上传设备打开网站联网停留十几秒自动补传，或重新上传一次', 'warning');
       return;
     }

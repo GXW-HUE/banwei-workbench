@@ -10,6 +10,7 @@ const App = {
   importLabelValue: null,       // 考勤模块导入标识（周次/月份）
   selectedRecords: new Set(),
   _searchTimer: null,
+  _openingSource: null,        // 防止双击"在线预览原始文件"卡片重复触发
   // 文件中心状态
   currentFolder: null,       // 当前打开的模块文件夹，null=根目录
   fileSearchQuery: '',       // 文件中心搜索关键词
@@ -768,6 +769,12 @@ const App = {
   // 点击眼睛后直接在应用内在线预览原始文件（Office Online / PDF / 图片），
   // 不再触发浏览器下载，也不再依赖本地后端。
   async openRecordSourceFile(moduleId, recordId) {
+    // 防止用户快速双击卡片导致重复打开/重复提示
+    const key = moduleId + '|' + recordId;
+    if (this._openingSource === key) return;
+    this._openingSource = key;
+    setTimeout(() => { if (this._openingSource === key) this._openingSource = null; }, 500);
+
     const record = Store.get(moduleId).find(r => r.id === recordId);
     if (!record) return;
 

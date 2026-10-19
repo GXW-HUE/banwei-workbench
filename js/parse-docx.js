@@ -113,7 +113,7 @@ const DocxParser = {
   extractHost(text) {
     if (!text) return '';
     const t = String(text).trim();
-    let m = t.match(/主持人[：:]\s*([^\n]{1,20}?)\s*(?=参加人数|地点|时间|班级|班会内容|班会主题|\n|$)/);
+    let m = t.match(/(?:班会)?主持[人]?[：:：\s]+([^\n]{1,20}?)(?=参加人数|实到人数|应到人数|地点|时间|班级|班会内容|班会主题|\n|$)/);
     if (m) return m[1].trim();
     return '';
   },
@@ -127,6 +127,9 @@ const DocxParser = {
     if (m) return parseInt(m[1]);
     // 模式2：从"应到XX人，实到XX人"取实到
     m = t.match(/实到[^\d]*(\d+)/);
+    if (m) return parseInt(m[1]);
+    // 模式3："参加人数："后跟人名时，取第一个数字（可能是人数）
+    m = t.match(/参加人数[：:]\s*\D*(\d+)/);
     if (m) return parseInt(m[1]);
     return '';
   },
