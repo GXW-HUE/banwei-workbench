@@ -406,7 +406,7 @@ const Store = {
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
-        this._fetchOneChannel(ch, ch.api ? 10000 : 8000, controllers[i]).then(r => {
+        this._fetchOneChannel(ch, ch.api ? 10000 : (ch.name === 'pages' ? 15000 : 8000), controllers[i]).then(r => {
           // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
           if (r.success) {
             if (r.hasData) fireQuick(r);
