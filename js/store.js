@@ -376,9 +376,16 @@ const Store = {
       return this.CLOUD.pullPromise;
     }
     this.CLOUD._lastQuick = null;
-    this.CLOUD.pullPromise = this._doFetchFromCloud(onQuick);
+    const real = this._doFetchFromCloud(onQuick);
+    this.CLOUD.pullPromise = real;
+    // 兜底超时：防止某个通道 fetch 挂起（如代理永久不响应/abort 信号未生效）导致 pullPromise
+    // 永久 pending，进而让后续所有同步都复用这个“死 promise”而永远不同步。超时即丢弃并允许下次重拉。
+    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('pull guard timeout')), 30000));
     try {
-      return await this.CLOUD.pullPromise;
+      return await Promise.race([real, guard]);
+    } catch (e) {
+      this.CLOUD.pullPromise = null;
+      throw e;
     } finally {
       this.CLOUD.pullPromise = null;
     }
@@ -408,7 +415,7 @@ const Store = {
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
       const start = () => {
         if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
-        this._fetchOneChannel(ch, ch.api ? 10000 : (ch.name === 'pages' ? 15000 : 8000), controllers[i]).then(r => {
+        this._fetchOneChannel(ch, ch.api ? 10000 : (ch.name === 'pages' ? 30000 : 8000), controllers[i]).then(r => {
           // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
           if (r.success) {
             if (r.hasData) fireQuick(r);
