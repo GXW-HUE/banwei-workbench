@@ -280,9 +280,22 @@ const Store = {
     const owner = this.CLOUD.owner, gid = this.CLOUD.gistId;
     const rawBase = 'https://gist.githubusercontent.com/' + owner + '/' + gid + '/raw/';
     const dataUrl = rawBase + 'data.json?t=' + ts;
+    const enc = encodeURIComponent;
+    // 需要整段 URL 编码的 CORS 代理：分片地址也必须整体编码后拼接
+    const encProxy = (name, prefix) => ({
+      name, api: false,
+      url: prefix + enc(dataUrl),
+      shard: (nm) => prefix + enc(rawBase + nm + '?t=' + ts)
+    });
     return [
+      { name: 'pages',       url: 'https://gxw-hue.github.io/banwei-workbench/sync/data.json?t=' + ts,
+                             base: 'https://gxw-hue.github.io/banwei-workbench/sync/', api: false },
       { name: 'gh-proxy',    url: 'https://gh-proxy.com/' + dataUrl,    base: 'https://gh-proxy.com/' + rawBase,    api: false },
       { name: 'ghfast',      url: 'https://ghfast.top/' + dataUrl,      base: 'https://ghfast.top/' + rawBase,      api: false },
+      { name: 'githack',     url: 'https://gist.githack.com/' + owner + '/' + gid + '/raw/data.json?t=' + ts,
+                             shard: (nm) => 'https://gist.githack.com/' + owner + '/' + gid + '/raw/' + nm + '?t=' + ts, api: false },
+      { name: 'allorigins',  ...encProxy('allorigins', 'https://api.allorigins.win/raw?url=') },
+      { name: 'codetabs',    ...encProxy('codetabs', 'https://api.codetabs.com/v1/proxy?quest=') },
       { name: 'raw',         url: dataUrl,                              base: rawBase,                              api: false },
       { name: 'api',         url: this.CLOUD.apiBase + gid,             base: null,                                 api: true,
         headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } },
@@ -329,7 +342,8 @@ const Store = {
         for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i);
         await Promise.all(shardNames.concat(extra).map(async (nm) => {
           try {
-            const r = await fetch(ch.base + nm + '?t=' + Date.now(), { signal: ctl.signal, headers: _headers });
+            const surl = ch.shard ? ch.shard(nm) : (ch.base + nm + '?t=' + Date.now());
+            const r = await fetch(surl, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
             if (r.ok) {
               const j = JSON.parse(await r.text());
               const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
@@ -436,6 +450,8 @@ const Store = {
         return bm - am;
       });
       const best = apiBest || withData[0] || successes[0];
+      this.CLOUD._lastPullChannel = best.channel || '?';
+      this.CLOUD._lastPullAt = new Date().toISOString();
       this.CLOUD.lastSyncTime = new Date().toISOString();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this._updateIndicator();
@@ -550,6 +566,9 @@ const Store = {
         if (!ok) throw lastErr || new Error('push failed');
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
+        // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
+        // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
+        try { await this._pushRepoMirror(JSON.stringify(allData.data, null, 2), allData.filesPayload); } catch (e) { console.warn('镜像提交失败(忽略):', e); }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
         if (this.CLOUD.pendingPush && rounds < 6) continue;
         this.CLOUD.isSyncing = false;
@@ -605,6 +624,44 @@ const Store = {
         if (r.ok) { this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
       }).catch(() => {});
     } catch (e) {}
+  },
+
+  // ===== 数据镜像：把云端数据同步提交到仓库 sync/ 目录，经 GitHub Pages 发布 =====
+  // 用途：gist.githubusercontent.com / api.github.com 在部分网络（手机流量）不可达，
+  // 但 gxw-hue.github.io 一定可达（网站就在上面）。镜像让所有设备多一条稳定拉取通道。
+  async _pushRepoMirror(dataContent, filesPayload) {
+    const owner = 'GXW-HUE', repo = 'banwei-workbench', branch = 'main';
+    const apiBase = 'https://api.github.com/repos/' + owner + '/' + repo + '/git/';
+    const H = {
+      'Authorization': 'Bearer ' + this.CLOUD.token,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'banwei-workbench'
+    };
+    const J = (r) => r.json();
+    // 1. 当前 main 引用
+    const ref = await J(await fetch(apiBase + 'ref/heads/' + branch, { headers: H, cache: 'no-store' }));
+    if (!ref || !ref.object) throw new Error('ref err');
+    const parent = ref.object.sha;
+    const parentCommit = await J(await fetch(apiBase + 'commits/' + parent, { headers: H, cache: 'no-store' }));
+    const baseTree = parentCommit.tree.sha;
+    // 2. 准备文件：data.json + 全部分片（null 的跳过，保留镜像里的旧分片）
+    const entries = [{ path: 'sync/data.json', mode: '100644', type: 'blob', content: dataContent }];
+    Object.keys(filesPayload || {}).forEach(n => {
+      const v = filesPayload[n];
+      if (typeof v === 'string' && v.length > 0) entries.push({ path: 'sync/' + n, mode: '100644', type: 'blob', content: v });
+    });
+    // 3. 建 blob → tree → commit → 更新引用
+    for (const e of entries) {
+      const b = await J(await fetch(apiBase + 'blobs', { method: 'POST', headers: H, body: JSON.stringify({ content: e.content, encoding: 'utf-8' }) }));
+      if (!b.sha) throw new Error('blob err');
+      e.sha = b.sha; delete e.content;
+    }
+    const tree = await J(await fetch(apiBase + 'trees', { method: 'POST', headers: H, body: JSON.stringify({ base_tree: baseTree, tree: entries }) }));
+    const nc = await J(await fetch(apiBase + 'commits', { method: 'POST', headers: H, body: JSON.stringify({ message: 'sync: data mirror', tree: tree.sha, parents: [parent] }) }));
+    await fetch(apiBase + 'ref/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) });
+    this.CLOUD._lastMirrorAt = new Date().toISOString();
+    console.log('[sync] Pages 镜像已更新:', nc.sha);
   },
 
   // ===== 待同步标记（持久化，防止退出前未推送成功导致丢失） =====

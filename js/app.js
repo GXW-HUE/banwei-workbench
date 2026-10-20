@@ -1863,6 +1863,15 @@ const App = {
           如果某台设备（如手机）首页数字明显少于电脑，说明它没拉到最新云端数据。点下面按钮会忽略本机空数据，强制以云端完整数据为准恢复。
         </div>
         <div class="settings-row">
+          <label>云端拉取状态</label>
+          <span class="settings-value">${(() => {
+            const cl = Store.CLOUD || {};
+            return cl._lastPullChannel
+              ? (cl._lastPullChannel + ' · ' + String(cl._lastPullAt || '').slice(0, 16).replace('T', ' '))
+              : '⚠️ 本设备从未成功连上云端';
+          })()}</span>
+        </div>
+        <div class="settings-row">
           <label>强制从云端恢复记录</label>
           <button class="btn btn-sm btn-primary" onclick="App.forceRestoreFromCloud()">☁️ 强制恢复</button>
         </div>
