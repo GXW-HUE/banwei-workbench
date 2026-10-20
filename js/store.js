@@ -337,9 +337,11 @@ const Store = {
         data = JSON.parse(await resp.text());
         // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
         // 另外兜底多探 2 个分片：清单本身可能因上次推送失败而未更新（防止漏拉导致文件内容缺失）
-        const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards : ['files_blob.json'];
+        // 文件名统一带 .json：仓库落盘为 files_blob_0.json，清单里可能是旧式无扩展名，这里统一补齐，避免 404
+        const _norm = (nm) => (nm && String(nm).endsWith('.json')) ? nm : (nm + '.json');
+        const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards.map(_norm) : ['files_blob.json'];
         const extra = [];
-        for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i);
+        for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i + '.json');
         await Promise.all(shardNames.concat(extra).map(async (nm) => {
           try {
             const surl = ch.shard ? ch.shard(nm) : (ch.base + nm + '?t=' + Date.now());
@@ -355,7 +357,7 @@ const Store = {
       // filesData 本身就是 { 文件id: 内容 } 的映射，直接作为 cloudData.files 供后续合并恢复
       data.files = filesData || {};
       // 记住云端分片清单：本机暂无内容时推送不会清空清单，保证其他设备仍能定位到分片
-      if (data._blobShards && data._blobShards.length) this.CLOUD._lastShards = data._blobShards;
+      if (data._blobShards && data._blobShards.length) this.CLOUD._lastShards = data._blobShards.map(_norm);
       return { success: true, hasData: true, data, channel: ch.name };
     } finally {
       clearTimeout(timer);
@@ -905,10 +907,11 @@ const Store = {
       }
       return f;
     });
-    const shardNames = shards.map((s, i) => 'files_blob_' + i);
+    const shardNames = shards.map((s, i) => 'files_blob_' + i + '.json');
     // 本机暂无任何文件内容时，绝不能把清单清空（否则其他设备下次会找不到云端分片），沿用上次云端清单
+    const _normName = (nm) => (nm && String(nm).endsWith('.json')) ? nm : (nm + '.json');
     data._blobShards = shards.length > 0 ? shardNames
-      : (this.CLOUD._lastShards && this.CLOUD._lastShards.length ? this.CLOUD._lastShards : (data._blobShards || ['files_blob.json']));
+      : (this.CLOUD._lastShards && this.CLOUD._lastShards.length ? this.CLOUD._lastShards.map(_normName) : (data._blobShards || ['files_blob.json']));
     const filesPayload = {};
     // 统一包装成 { files: {...} }，与拉取端解析格式一致
     shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify({ files: shards[i] }); });
@@ -920,7 +923,7 @@ const Store = {
       try {
         const prev = Number(localStorage.getItem(this.SHARD_COUNT_KEY) || 0);
         for (let i = shards.length; i < Math.max(prev, shards.length + 5); i++) {
-          filesPayload['files_blob_' + i] = null;
+          filesPayload['files_blob_' + i + '.json'] = null;
         }
       } catch (e) {}
       try { localStorage.setItem(this.SHARD_COUNT_KEY, String(shards.length)); } catch (e) {}
