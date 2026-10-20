@@ -568,7 +568,11 @@ const Store = {
         this.CLOUD.lastSyncTime = new Date().toISOString();
         // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
         // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
-        try { await this._pushRepoMirror(JSON.stringify(allData.data, null, 2), allData.filesPayload); } catch (e) { console.warn('镜像提交失败(忽略):', e); }
+        try {
+          await this._pushRepoMirror(JSON.stringify(allData.data, null, 2), allData.filesPayload);
+          this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
+          this.CLOUD._canReachCloud = true;
+        } catch (e) { console.warn('镜像提交失败(忽略):', e); }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
         if (this.CLOUD.pendingPush && rounds < 6) continue;
         this.CLOUD.isSyncing = false;
@@ -661,7 +665,28 @@ const Store = {
     const nc = await J(await fetch(apiBase + 'commits', { method: 'POST', headers: H, body: JSON.stringify({ message: 'sync: data mirror', tree: tree.sha, parents: [parent] }) }));
     await fetch(apiBase + 'ref/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) });
     this.CLOUD._lastMirrorAt = new Date().toISOString();
+    this.CLOUD._canReachCloud = true;
     console.log('[sync] Pages 镜像已更新:', nc.sha);
+  },
+
+  // 按需推送镜像：仅当本机数据比线上镜像新、且本机确认能连上 GitHub 时才推（手机连不上，自动跳过）
+  async _pushMirrorIfNeeded() {
+    if (!this.CLOUD._canReachCloud) return;          // 本机连不上 GitHub（如手机流量）→ 不尝试
+    if (this.CLOUD.pushInFlight || this.CLOUD.isSyncing) return;
+    if (this.CLOUD._mirrorPushing) return;
+    const all = this._safeCollectAllData();
+    const modified = all.data.lastModified ? Date.parse(all.data.lastModified) : 0;
+    const lastM = this.CLOUD._lastMirrorModified || 0;
+    if (modified <= lastM) return;                   // 镜像已是最新，无需推送
+    this.CLOUD._mirrorPushing = true;
+    try {
+      await this._pushRepoMirror(JSON.stringify(all.data, null, 2), all.filesPayload);
+      this.CLOUD._lastMirrorModified = modified;
+    } catch (e) {
+      console.warn('镜像补推失败(忽略):', e);
+    } finally {
+      this.CLOUD._mirrorPushing = false;
+    }
   },
 
   // ===== 待同步标记（持久化，防止退出前未推送成功导致丢失） =====
@@ -733,6 +758,11 @@ const Store = {
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
     }, 15000);
+    // 定时把数据镜像推到网站（手机等连不上 GitHub 的设备靠它同步），保证镜像始终接近实时
+    setInterval(() => {
+      if (document.hidden) return;
+      this._pushMirrorIfNeeded();
+    }, 60000);
   },
 
   // 拉取完成后：若有待推送的改动，补推一次
@@ -1143,6 +1173,8 @@ const Store = {
           this.CLOUD.pendingPush = false;
           setTimeout(() => { if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this.pushToCloud(); }, 300);
         }
+        // 首次进入 / 每次成功拉取后：把本机数据刷新到网站镜像（电脑侧），手机随后即可读到
+        this._pushMirrorIfNeeded();
       }).catch(e => {
         this.CLOUD.pulling = false;
         this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'error';
