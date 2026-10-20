@@ -312,6 +312,7 @@ const Store = {
     const _headers = Object.assign({ 'User-Agent': 'banwei-workbench', 'Accept': 'application/json' }, ch.headers || {});
     try {
       let data, filesData = {};
+      const _norm = (nm) => (nm && String(nm).endsWith('.json')) ? nm : (nm + '.json');
       if (ch.api) {
         const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -337,8 +338,7 @@ const Store = {
         data = JSON.parse(await resp.text());
         // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
         // 另外兜底多探 2 个分片：清单本身可能因上次推送失败而未更新（防止漏拉导致文件内容缺失）
-        // 文件名统一带 .json：仓库落盘为 files_blob_0.json，清单里可能是旧式无扩展名，这里统一补齐，避免 404
-        const _norm = (nm) => (nm && String(nm).endsWith('.json')) ? nm : (nm + '.json');
+        // 文件名统一带 .json：仓库落盘为 files_blob_0.json，清单里可能是旧式无扩展名，用外层 _norm 补齐，避免 404
         const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards.map(_norm) : ['files_blob.json'];
         const extra = [];
         for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i + '.json');
