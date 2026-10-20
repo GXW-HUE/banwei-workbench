@@ -979,6 +979,21 @@ const Store = {
       // 云端带来的文件内容写入 IndexedDB，元数据写入 localStorage
       this._writeFilesWithContent(protectedFiles);
     }
+    // 自修复：检测"本机持有内容、但云端缺失该内容"的文件（历史版本/弱网导致部分文件字节从未上云，
+    // 元数据虽已同步、内容却只留在某台设备上）。这一台设备下次打开站点时，应自动把字节补传上云，
+    // 让其他设备也能同步到内容。标记 _needContentUpload，由下方 _mergeCloudData 据此触发补推。
+    try {
+      const localFiles2 = this.getFiles();
+      const cloudContentIds = new Set();
+      const cfMap = cloudData.files || {};
+      Object.keys(cfMap).forEach(k => { if (typeof cfMap[k] === 'string' && cfMap[k].length) cloudContentIds.add(k); });
+      (cloudData._files || []).forEach(cf => {
+        if (typeof cf.content === 'string' && cf.content.length) cloudContentIds.add(cf.id);
+      });
+      const localHasMissingContent = (localFiles2 || []).some(f =>
+        typeof f.content === 'string' && f.content.length > 0 && !cloudContentIds.has(f.id));
+      this.CLOUD._needContentUpload = !!localHasMissingContent;
+    } catch (e) { this.CLOUD._needContentUpload = false; }
     // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
     if (cloudData._deleted && typeof cloudData._deleted === 'object') {
       const mergedTombs = {};
@@ -1097,7 +1112,7 @@ const Store = {
     try { localStorage.setItem(this.SYNC_KEY, String(Date.now())); } catch (e) {}
     this._markMerged();
 
-    const needPush = localHasExtra || tombNewer || this.CLOUD.dirty;
+    const needPush = localHasExtra || tombNewer || this.CLOUD.dirty || this.CLOUD._needContentUpload;
     // silent=true：推送前的静默合并，只并入数据，不改状态/不渲染/不递归推送
     if (silent) return true;
     this.CLOUD.syncStatus = needPush ? 'dirty' : 'idle';
