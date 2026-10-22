@@ -12,7 +12,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="班委工作台">
-  <link rel="stylesheet" href="css/style.css?v=20261020-40">
+  <link rel="stylesheet" href="css/style.css?v=20261020-41">
 <script async src="https://beacon.cdn.qq.com/sdk/4.5.9/beacon_web.min.js"></script>
 <script>
 (function(){
@@ -43,7 +43,7 @@
        旧版把版本号写死在 HTML 里，导致左下角永远显示旧版本、用户误以为没更新。
        现在：真实版本由 JS 动态写入，并主动比对线上 version.json；
        若发现本机跑的是旧代码，自动注销 Service Worker + 清空缓存并重载（不会丢失本机数据）。 */
-    window.__BW_BUILD__ = '20261020-40';
+    window.__BW_BUILD__ = '20261020-41';
     (function () {
       var BUILD = window.__BW_BUILD__;
       var barEl = null;
@@ -111,6 +111,24 @@
           })
           .catch(function () { show('v' + BUILD); });
       } catch (e) { show('v' + BUILD); }
+      // 常驻页面保活场景（PWA/浏览器从后台恢复不会重新导航，浏览器也就不会做 SW 更新检查，
+      // 导致页面一直跑旧代码、读旧缓存数据）。每 30 分钟复查一次线上版本，发现新版自动强制更新。
+      setInterval(function () {
+        if (document.hidden) return;
+        try {
+          fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              var v = j && j.v;
+              if (v && v !== BUILD) {
+                window.__BW_LATEST__ = v;
+                show('发现新版 v' + v + '，正在更新…', '#ff9f43');
+                window.BWForceUpdate(true);
+              }
+            })
+            .catch(function () {});
+        } catch (e) {}
+      }, 30 * 60 * 1000);
     })();
   </script>
   <div id="app">
@@ -201,11 +219,11 @@
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
-  <script src="js/config.js?v=20261020-40"></script>
-  <script src="js/store.js?v=20261020-40"></script>
-  <script src="js/parse-docx.js?v=20261020-40"></script>
-  <script src="js/exporter.js?v=20261020-40"></script>
-  <script src="js/app.js?v=20261020-40"></script>
+  <script src="js/config.js?v=20261020-41"></script>
+  <script src="js/store.js?v=20261020-41"></script>
+  <script src="js/parse-docx.js?v=20261020-41"></script>
+  <script src="js/exporter.js?v=20261020-41"></script>
+  <script src="js/app.js?v=20261020-41"></script>
   <script>
     // PWA Service Worker 注册（手机安装 App / 离线使用）+ 发现新版本自动刷新
     // 注册 URL 带版本号：版本变化时浏览器会当作新脚本重新下载安装（解决手机一直跑旧代码）
