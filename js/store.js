@@ -39,6 +39,7 @@ const Store = {
   EVER_MERGED_KEY: 'class_workbench__cloud_ever_merged',
   TOMB_KEY: 'class_workbench__tombstones',   // 删除墓碑 {bucket: {id: 删除时间戳ms}}
   SYNC_KEY: 'class_workbench__last_sync',    // 上次成功合并云端的时间戳ms
+  LEGACY_CLEAN_KEY: 'class_workbench__legacy_clean',  // v47：旧版无后缀分片是否已清理（一次性标记）
   TOMB_TTL: 30 * 24 * 3600 * 1000,           // 墓碑保留30天
 
   // ===== 文件内容存储引擎（IndexedDB）=====
@@ -638,6 +639,24 @@ const Store = {
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
         this._setShardHashes(newHashes);   // 推送成功：记录本次分片哈希，下次增量对比
+        // v47 迁移清理：一次成功推送后，云端可能残留旧版无后缀分片 files_blob_N（贪心装箱时代，
+        // 无 .json 后缀，占 Gist 总量且内容已迁移到新分片）。单独一次 PATCH 删除它们，
+        // 把 Gist 总量压回 1MB 上限内，避免后续新分片被 truncated。
+        // 仅清理一次：用 localStorage 标记，避免每次推送都消耗一次写配额。
+        try {
+          if (!localStorage.getItem(this.LEGACY_CLEAN_KEY)) {
+            const legacy = [];
+            for (let i = 0; i < 20; i++) legacy.push('files_blob_' + i);
+            legacy.push('files_blob');  // 兼容更早期单一分片
+            const body2 = { files: {} };
+            legacy.forEach(nm => { body2.files[nm] = { content: '' }; });
+            const resp = await this._pushOnce(body2, false);
+            if (resp) {
+              try { localStorage.setItem(this.LEGACY_CLEAN_KEY, '1'); } catch (e) {}
+              console.log('已清理旧版无后缀分片残留');
+            }
+          }
+        } catch (e) { console.warn('旧分片清理跳过(忽略):', e); }
         // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
         // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
         // v44 节流：镜像提交每次消耗 4~5 次 GitHub 写配额（blob/tree/commit/ref），
@@ -994,7 +1013,7 @@ const Store = {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
     const N_SLOTS = 16;             // 固定主桶数
-    const SHARD_MAX = 860000;       // 单个桶最大字符数（Gist 单文件 ~1MB 上限，留安全余量）
+    const SHARD_MAX = 600000;       // 单个桶最大字符数（Gist 单文件 ~1MB、单 gist 总量 1MB 双上限，留充足余量）
     const CHUNK = 420000;           // 单个内容块最大字符数（大文件按此切块）
     const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
     // 稳定哈希：仅由文件 id 决定槽号，同一文件永远进同一槽 → 内容变更只影响单槽
@@ -1049,8 +1068,9 @@ const Store = {
     data._blobShards = shards.length > 0 ? shardNames
       : (this.CLOUD._lastShards && this.CLOUD._lastShards.length ? this.CLOUD._lastShards.map(_normName) : (data._blobShards || ['files_blob.json']));
     const filesPayload = {};
-    // 统一包装成 { files: {...} }，与拉取端解析格式一致
-    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify({ files: shards[i] }); });
+    // v47 紧凑化：分片直接存裸映射 {文件id: 内容}（不再包 {files:{...}} 壳层，省 ~15% 体积，
+    // 并保证 Gist 总大小 1MB 上限内尽量多容纳文件）。拉取端 _fetchOneChannel 兼容两种格式。
+    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify(shards[i]); });
     // 仅当本次确有文件内容分片上云时，才清理旧分片残留：
     // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
     // v46 修正：Gist PATCH 中删除一个"云端不存在"的文件会 422 missing_field。
