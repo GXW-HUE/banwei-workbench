@@ -551,8 +551,7 @@ const Store = {
           headers: {
             'Authorization': 'Bearer ' + this.CLOUD.token,
             'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'banwei-workbench',
-            'Cache-Control': 'no-store'
+            'User-Agent': 'banwei-workbench'
           }
         });
         if (!resp.ok) return [];

@@ -2117,6 +2117,26 @@ const App = {
 };
 
 // ===== 启动应用 =====
-document.addEventListener('DOMContentLoaded', () => {
+// v49 双保险启动：DOMContentLoaded 优先；若被外部 CDN 阻塞（部分网络下 async 库挂起
+// 会延迟 DOMContentLoaded），则用 DOM 就绪探测自愈启动，保证页面秒开、云端拉取立即进行。
+let __appStarted = false;
+function __startApp() {
+  if (__appStarted) return;
+  __appStarted = true;
   App.init();
-});
+}
+document.addEventListener('DOMContentLoaded', () => __startApp());
+// 等不到 DOMContentLoaded 时（CDN 挂起等极端情况）：DOM 就绪即启动
+setTimeout(() => {
+  try {
+    if (!__appStarted && (document.readyState === 'interactive' || document.readyState === 'complete')) {
+      __startApp();
+    }
+  } catch (e) {}
+}, 2500);
+// 最后兜底：8 秒仍未启动则强制启动（即便 readyState 仍 loading）
+setTimeout(() => {
+  try {
+    if (!__appStarted) __startApp();
+  } catch (e) {}
+}, 8000);
