@@ -477,7 +477,9 @@ const Store = {
   // 双层超时兜底：AbortController 在部分网络/代理下 abort 信号可能不生效，导致 fetch 永久挂起、
   // 推送锁永久占用、后续所有同步全部卡死（曾致"上传成功但云端收不到"）。此处再加一层 Promise.race
   // 硬超时：无论 abort 是否生效，30 秒内必然 reject 并释放推送锁，由外层重试/轮询补推，绝不卡死。
-  async _pushOnce(body) {
+  // v44：识别 GitHub 写配额撞限（403 + x-ratelimit-reset）。写配额 100 次/小时且全设备共享，
+  // 撞限时快速重试只会继续烧配额；改为读取 reset 时间、等待配额恢复后再重试一次。
+  async _pushOnce(body, rateLimitWaitMs) {
     const ctl = new AbortController();
     const abortTimer = setTimeout(() => { try { ctl.abort(); } catch (e) {} }, 20000);
     let hardTimer = null;
@@ -497,6 +499,24 @@ const Store = {
         }),
         hard
       ]);
+      if (resp.status === 403) {
+        // 写配额撞限：等待 reset 后重试一次（reset 由响应头给出，最多等 65 秒）
+        let waitMs = 65000;
+        try {
+          const rl = resp.headers.get('x-ratelimit-reset');
+          if (rl) {
+            const resetSec = Number(rl) * 1000 - Date.now();
+            if (resetSec > 500 && resetSec < 65000) waitMs = resetSec + 500;
+          }
+        } catch (e) {}
+        const txt = await resp.text().catch(() => '');
+        if (txt && txt.indexOf('rate limit') >= 0) {
+          console.warn('GitHub 写配额已满，等待 ' + Math.round(waitMs / 1000) + ' 秒后重试');
+          if (rateLimitWaitMs) await this._sleep(waitMs);
+          throw new Error('RATE_LIMIT_WAIT');
+        }
+        throw new Error('HTTP 403');
+      }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       return true;
     } finally {
@@ -595,16 +615,22 @@ const Store = {
           if (prevHashes[name] === h) return;   // 分片内容未变化：跳过，云端保留原分片
           body.files[name] = { content: v };
         });
-        // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
+        // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）；撞限 403 时等待配额恢复后重试一次
         let ok = false, lastErr = null;
         for (let attempt = 0; attempt < 5; attempt++) {
           try {
-            await this._pushOnce(body);
+            await this._pushOnce(body, attempt === 0);
             ok = true;
             break;
           } catch (e) {
             lastErr = e;
             console.warn('云端推送第 ' + (attempt + 1) + ' 次失败:', e);
+            if (String(e).indexOf('RATE_LIMIT_WAIT') >= 0) {
+              // 已等待配额恢复，再给一次机会；仍失败则交外层轮询补推
+              attempt = 10;  // 跳出循环
+              try { await this._pushOnce(body, false); ok = true; } catch (e2) { lastErr = e2; }
+              break;
+            }
             if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
           }
         }
@@ -614,10 +640,17 @@ const Store = {
         this._setShardHashes(newHashes);   // 推送成功：记录本次分片哈希，下次增量对比
         // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
         // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
+        // v44 节流：镜像提交每次消耗 4~5 次 GitHub 写配额（blob/tree/commit/ref），
+        // 而写配额仅 100 次/小时且全设备共享——不节流会烧光配额导致所有设备 PATCH 403。
+        // 因此镜像 10 分钟内最多提交一次（数据最终一致，延迟可接受）。
         try {
-          await this._pushRepoMirror(JSON.stringify(allData.data), allData.filesPayload, prevHashes, newHashes);
-          this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
-          this.CLOUD._canReachCloud = true;
+          const mirrorAt = this.CLOUD._lastMirrorAt || 0;
+          if (Date.now() - mirrorAt >= 600000) {
+            await this._pushRepoMirror(JSON.stringify(allData.data), allData.filesPayload, prevHashes, newHashes);
+            this.CLOUD._lastMirrorAt = Date.now();
+            this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
+            this.CLOUD._canReachCloud = true;
+          }
         } catch (e) { console.warn('镜像提交失败(忽略):', e); }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
         if (this.CLOUD.pendingPush && rounds < 6) continue;
@@ -750,6 +783,8 @@ const Store = {
     if (!this.CLOUD._canReachCloud) return;          // 本机连不上 GitHub（如手机流量）→ 不尝试
     if (this.CLOUD.pushInFlight || this.CLOUD.isSyncing) return;
     if (this.CLOUD._mirrorPushing) return;
+    // v44 节流：镜像提交消耗写配额（100 次/小时共享），10 分钟内最多一次
+    if (this.CLOUD._lastMirrorAt && Date.now() - this.CLOUD._lastMirrorAt < 600000) return;
     const all = this._safeCollectAllData();
     const modified = all.data.lastModified ? Date.parse(all.data.lastModified) : 0;
     const lastM = this.CLOUD._lastMirrorModified || 0;
@@ -764,6 +799,7 @@ const Store = {
         newHashes[n] = (typeof v === 'string' && v.length > 0) ? this._hashStr(v) : null;
       });
       await this._pushRepoMirror(JSON.stringify(all.data), all.filesPayload, prevHashes, newHashes);
+      this.CLOUD._lastMirrorAt = Date.now();
       this.CLOUD._lastMirrorModified = modified;
     } catch (e) {
       console.warn('镜像补推失败(忽略):', e);
