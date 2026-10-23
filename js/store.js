@@ -597,6 +597,24 @@ const Store = {
         this.CLOUD.isSyncing = true;
         this.CLOUD.syncStatus = 'pushing';
         this._updateIndicator();
+        // v47 迁移清理（推送前独立执行）：云端可能残留旧版无后缀分片 files_blob_N（贪心装箱时代，
+        // 无 .json 后缀，占 Gist 总量 1MB 上限且内容已迁移到新分片）。删除它们把总量压回 1MB 内，
+        // 否则后续推送可能因超限被 422/truncated，形成"清理在推送后、推送因超限失败"的死锁。
+        // 独立于主推送：只要连上 GitHub 且未清理过，就先清一次；失败不阻塞主推送。
+        try {
+          if (!localStorage.getItem(this.LEGACY_CLEAN_KEY)) {
+            const legacy = [];
+            for (let i = 0; i < 20; i++) legacy.push('files_blob_' + i);
+            legacy.push('files_blob');  // 兼容更早期单一分片
+            const body2 = { files: {} };
+            legacy.forEach(nm => { body2.files[nm] = { content: '' }; });
+            const resp = await this._pushOnce(body2, false);
+            if (resp) {
+              try { localStorage.setItem(this.LEGACY_CLEAN_KEY, '1'); } catch (e) {}
+              console.log('已清理旧版无后缀分片残留');
+            }
+          }
+        } catch (e) { console.warn('旧分片清理跳过(忽略):', e); }
         // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进 blob
         try { await this._refreshContentCache(); } catch (e) {}
         const allData = this._safeCollectAllData();
@@ -639,24 +657,6 @@ const Store = {
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
         this._setShardHashes(newHashes);   // 推送成功：记录本次分片哈希，下次增量对比
-        // v47 迁移清理：一次成功推送后，云端可能残留旧版无后缀分片 files_blob_N（贪心装箱时代，
-        // 无 .json 后缀，占 Gist 总量且内容已迁移到新分片）。单独一次 PATCH 删除它们，
-        // 把 Gist 总量压回 1MB 上限内，避免后续新分片被 truncated。
-        // 仅清理一次：用 localStorage 标记，避免每次推送都消耗一次写配额。
-        try {
-          if (!localStorage.getItem(this.LEGACY_CLEAN_KEY)) {
-            const legacy = [];
-            for (let i = 0; i < 20; i++) legacy.push('files_blob_' + i);
-            legacy.push('files_blob');  // 兼容更早期单一分片
-            const body2 = { files: {} };
-            legacy.forEach(nm => { body2.files[nm] = { content: '' }; });
-            const resp = await this._pushOnce(body2, false);
-            if (resp) {
-              try { localStorage.setItem(this.LEGACY_CLEAN_KEY, '1'); } catch (e) {}
-              console.log('已清理旧版无后缀分片残留');
-            }
-          }
-        } catch (e) { console.warn('旧分片清理跳过(忽略):', e); }
         // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
         // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
         // v44 节流：镜像提交每次消耗 4~5 次 GitHub 写配额（blob/tree/commit/ref），
