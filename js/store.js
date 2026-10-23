@@ -981,49 +981,61 @@ const Store = {
     return n;
   },
 
-  // ===== 推送前安全化：把文件内容按 id 哈希稳定拆入 16 个固定桶（files_blob_0/1/...），data.json 只留元数据 =====
+  // ===== 推送前安全化：把文件内容按 id 哈希稳定拆入 16 个固定主桶（files_blob_0/1/...），data.json 只留元数据 =====
   // 背景：文件 base64 内容若与数据一起塞进 data.json，会快速逼近 Gist 单文件 ~1MB 上限，
   //       导致后上传/较大的文件被降级为 cloudLimited（内容只留本机），无法跨设备预览/导出。
-  // v42+ 关键改进：固定 16 桶哈希分桶（按文件 id 稳定入桶）取代"全量贪心装箱"。
+  // v43+ 关键改进：固定 16 桶哈希分桶（按文件 id 稳定入桶）取代"全量贪心装箱"。
   //   - 任何文件的新增/删除/修改，只影响它所在的那个桶（~几十 KB）；
   //   - 其余 15 个桶内容完全不变 → 增量推送时哈希相同被跳过 → 每次推送体积从全量 700KB+
   //     降到 data.json(~90KB)+变化桶(~几十 KB)，慢网也能 5-15 秒完成，根治"上传成功云端收不到"。
-  //   - 16 桶 × 860KB 上限 = ~13MB 总预算，覆盖班级全学期所有文件绰绰有余；大文件仍按 CHUNK 切块。
+  //   - 大文件按 CHUNK 切块后仍进本槽；单桶超过 SHARD_MAX 时开扩展桶 files_blob_<槽>_<n>.json
+  //     （Gist 单文件 ~1MB 硬上限，超限会 422）——扩展桶仍属于同一槽，不影响其它 15 槽增量。
   _safeCollectAllData() {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
-    const N_SLOTS = 16;             // 固定分桶数
-    const SHARD_MAX = 860000;       // 单个桶最大字符数
+    const N_SLOTS = 16;             // 固定主桶数
+    const SHARD_MAX = 860000;       // 单个桶最大字符数（Gist 单文件 ~1MB 上限，留安全余量）
     const CHUNK = 420000;           // 单个内容块最大字符数（大文件按此切块）
-    const slots = [];
-    for (let i = 0; i < N_SLOTS; i++) slots.push({});
     const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
-    // 稳定哈希：仅由文件 id 决定桶号，同一文件永远进同一桶 → 内容变更只影响单桶
+    // 稳定哈希：仅由文件 id 决定槽号，同一文件永远进同一槽 → 内容变更只影响单槽
     const slotOf = (id) => {
       let h = 0;
       const s = String(id);
       for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i)) % N_SLOTS;
       return h;
     };
+    // 每个槽：块列表 [{key, s}]，按 key 排序保证稳定 JSON
+    const slotBlocks = [];
+    for (let i = 0; i < N_SLOTS; i++) slotBlocks.push([]);
     withContent.forEach(f => {
       const c = f.content;
       const slot = slotOf(f.id);
       if (c.length <= CHUNK) {
-        slots[slot][f.id] = c;
+        slotBlocks[slot].push({ key: f.id, s: c });
       } else {
         const n = Math.ceil(c.length / CHUNK);
-        for (let i = 0; i < n; i++) slots[slot][f.id + '|' + i] = c.substr(i * CHUNK, CHUNK);
+        for (let i = 0; i < n; i++) slotBlocks[slot].push({ key: f.id + '|' + i, s: c.substr(i * CHUNK, CHUNK) });
       }
     });
-    // 桶内 key 排序后重组，保证相同文件集合 → 完全相同的 JSON（增量哈希才稳定）
     const shardNames = [], shards = [];
-    for (let i = 0; i < N_SLOTS; i++) {
-      const keys = Object.keys(slots[i]).sort();
-      if (!keys.length) continue;
-      const obj = {};
-      keys.forEach(k => { obj[k] = slots[i][k]; });
-      shardNames.push('files_blob_' + i + '.json');
-      shards.push(obj);
+    for (let slot = 0; slot < N_SLOTS; slot++) {
+      const blocks = slotBlocks[slot].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      if (!blocks.length) continue;
+      let cur = {}, curLen = 0, ext = 0;
+      const flush = () => {
+        const obj = {};
+        Object.keys(cur).sort().forEach(k => { obj[k] = cur[k]; });
+        const nm = (ext === 0) ? ('files_blob_' + slot + '.json') : ('files_blob_' + slot + '_' + ext + '.json');
+        shardNames.push(nm);
+        shards.push(obj);
+        cur = {}; curLen = 0; ext++;
+      };
+      blocks.forEach(b => {
+        if (curLen > 0 && curLen + b.s.length > SHARD_MAX) flush();
+        cur[b.key] = b.s;
+        curLen += b.s.length;
+      });
+      if (curLen > 0) flush();
     }
     // _files 剥离 content（内容已拆到分片）；本机无内容的文件保持 cloudLimited=true（等上传设备补传）
     data._files = files.map(f => {
@@ -1043,12 +1055,12 @@ const Store = {
     // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
     if (shards.length > 0) {
       filesPayload['files_blob.json'] = null;
-      // 固定 16 桶：清理超出本次实际桶数的"旧分片残留"（兼容此前贪心装箱时代产生的多余 files_blob_N）
+      // 清理上次存在但本次不存在的旧分片（文件删除/槽内桶数减少），防止残留旧内容混淆
       try {
-        const prev = Number(localStorage.getItem(this.SHARD_COUNT_KEY) || 0);
-        for (let i = shards.length; i < Math.max(prev, N_SLOTS); i++) {
-          filesPayload['files_blob_' + i + '.json'] = null;
-        }
+        const prev = this._getShardHashes();
+        Object.keys(prev).forEach(nm => {
+          if (!shardNames.includes(nm)) filesPayload[nm] = null;
+        });
       } catch (e) {}
       try { localStorage.setItem(this.SHARD_COUNT_KEY, String(shards.length)); } catch (e) {}
     }
