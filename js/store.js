@@ -1051,16 +1051,20 @@ const Store = {
     const filesPayload = {};
     // 统一包装成 { files: {...} }，与拉取端解析格式一致
     shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify({ files: shards[i] }); });
-    // 仅当本次确有文件内容分片上云时，才删除旧版单一 files_blob.json；
+    // 仅当本次确有文件内容分片上云时，才清理旧分片残留：
     // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
+    // v46 修正：Gist PATCH 中删除一个"云端不存在"的文件会 422 missing_field。
+    // 因此只删除"上次推送成功后记录在案"的分片（_getShardHashes 的 key），
+    // 首次推送（prev 为空）时不做任何删除；旧版单一 files_blob.json 仅当上次成功推送
+    // 记录过它时才删除，绝不臆测云端存在。
     if (shards.length > 0) {
-      filesPayload['files_blob.json'] = null;
-      // 清理上次存在但本次不存在的旧分片（文件删除/槽内桶数减少），防止残留旧内容混淆
       try {
         const prev = this._getShardHashes();
-        Object.keys(prev).forEach(nm => {
-          if (!shardNames.includes(nm)) filesPayload[nm] = null;
-        });
+        if (prev && typeof prev === 'object') {
+          Object.keys(prev).forEach(nm => {
+            if (!shardNames.includes(nm)) filesPayload[nm] = null;
+          });
+        }
       } catch (e) {}
       try { localStorage.setItem(this.SHARD_COUNT_KEY, String(shards.length)); } catch (e) {}
     }
