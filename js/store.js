@@ -539,6 +539,28 @@ const Store = {
   _setShardHashes(map) {
     try { localStorage.setItem(this.SHARD_HASH_KEY, JSON.stringify(map || {})); } catch (e) {}
   },
+  // v48：GET 云端 Gist 真实文件清单（只取文件名，GET 配额 5000/h 充足，不消耗写配额）。
+  // 用于清理分片前确认"云端真实存在"，避免删除不存在的文件触发 422 missing_field。
+  async _getCloudFileList() {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 12000);
+      try {
+        const resp = await fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
+          signal: ctl.signal,
+          headers: {
+            'Authorization': 'Bearer ' + this.CLOUD.token,
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'banwei-workbench',
+            'Cache-Control': 'no-store'
+          }
+        });
+        if (!resp.ok) return [];
+        const g = JSON.parse(await resp.text());
+        return Object.keys(g.files || {});
+      } finally { clearTimeout(timer); }
+    } catch (e) { return []; }  // 失败时返回空清单 = 不删除任何分片（宁可残留也不误删）
+  },
   _hashStr(s) {
     // 快速非加密哈希：只用于判断分片内容是否变化，够用且快
     let h = 5381;
@@ -600,24 +622,34 @@ const Store = {
         // v47 迁移清理（推送前独立执行）：云端可能残留旧版无后缀分片 files_blob_N（贪心装箱时代，
         // 无 .json 后缀，占 Gist 总量 1MB 上限且内容已迁移到新分片）。删除它们把总量压回 1MB 内，
         // 否则后续推送可能因超限被 422/truncated，形成"清理在推送后、推送因超限失败"的死锁。
+        // v48：只删云端真实存在的旧分片（GET 清单过滤），删除不存在的文件会 422。
         // 独立于主推送：只要连上 GitHub 且未清理过，就先清一次；失败不阻塞主推送。
         try {
           if (!localStorage.getItem(this.LEGACY_CLEAN_KEY)) {
+            const cloudNames = await this._getCloudFileList();
             const legacy = [];
-            for (let i = 0; i < 20; i++) legacy.push('files_blob_' + i);
-            legacy.push('files_blob');  // 兼容更早期单一分片
-            const body2 = { files: {} };
-            legacy.forEach(nm => { body2.files[nm] = { content: '' }; });
-            const resp = await this._pushOnce(body2, false);
-            if (resp) {
+            for (let i = 0; i < 20; i++) {
+              const nm = 'files_blob_' + i;
+              if (cloudNames.indexOf(nm) >= 0) legacy.push(nm);  // 仅删云端真实存在的
+            }
+            if (cloudNames.indexOf('files_blob') >= 0) legacy.push('files_blob');
+            if (legacy.length) {
+              const body2 = { files: {} };
+              legacy.forEach(nm => { body2.files[nm] = { content: '' }; });
+              const resp = await this._pushOnce(body2, false);
+              if (resp) {
+                try { localStorage.setItem(this.LEGACY_CLEAN_KEY, '1'); } catch (e) {}
+                console.log('已清理旧版无后缀分片残留:', legacy.join(','));
+              }
+            } else {
+              // 云端没有旧分片：直接标记已清理，避免每次推送都 GET 一次
               try { localStorage.setItem(this.LEGACY_CLEAN_KEY, '1'); } catch (e) {}
-              console.log('已清理旧版无后缀分片残留');
             }
           }
         } catch (e) { console.warn('旧分片清理跳过(忽略):', e); }
         // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进 blob
         try { await this._refreshContentCache(); } catch (e) {}
-        const allData = this._safeCollectAllData();
+        const allData = await this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
         // 增量推送：data.json 紧凑序列化（去掉缩进，省 20~30% 体积）；分片只推"内容变化"的部分。
@@ -705,7 +737,7 @@ const Store = {
     try {
       // 先刷新内容缓存，确保本机文件内容都带上云
       try { await this._refreshContentCache(); } catch (e) {}
-      const allData = this._safeCollectAllData();
+      const allData = await this._safeCollectAllData();
       allData.data.lastModified = new Date().toISOString();
       this._setLocalModified(allData.data.lastModified);
       const bodyFiles = { 'data.json': { content: JSON.stringify(allData.data) } };
@@ -804,7 +836,7 @@ const Store = {
     if (this.CLOUD._mirrorPushing) return;
     // v44 节流：镜像提交消耗写配额（100 次/小时共享），10 分钟内最多一次
     if (this.CLOUD._lastMirrorAt && Date.now() - this.CLOUD._lastMirrorAt < 600000) return;
-    const all = this._safeCollectAllData();
+    const all = await this._safeCollectAllData();
     const modified = all.data.lastModified ? Date.parse(all.data.lastModified) : 0;
     const lastM = this.CLOUD._lastMirrorModified || 0;
     if (modified <= lastM) return;                   // 镜像已是最新，无需推送
@@ -1009,7 +1041,7 @@ const Store = {
   //     降到 data.json(~90KB)+变化桶(~几十 KB)，慢网也能 5-15 秒完成，根治"上传成功云端收不到"。
   //   - 大文件按 CHUNK 切块后仍进本槽；单桶超过 SHARD_MAX 时开扩展桶 files_blob_<槽>_<n>.json
   //     （Gist 单文件 ~1MB 硬上限，超限会 422）——扩展桶仍属于同一槽，不影响其它 15 槽增量。
-  _safeCollectAllData() {
+  async _safeCollectAllData() {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
     const N_SLOTS = 16;             // 固定主桶数
@@ -1074,15 +1106,16 @@ const Store = {
     // 仅当本次确有文件内容分片上云时，才清理旧分片残留：
     // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
     // v46 修正：Gist PATCH 中删除一个"云端不存在"的文件会 422 missing_field。
-    // 因此只删除"上次推送成功后记录在案"的分片（_getShardHashes 的 key），
-    // 首次推送（prev 为空）时不做任何删除；旧版单一 files_blob.json 仅当上次成功推送
-    // 记录过它时才删除，绝不臆测云端存在。
+    // v48 再修正：仅"上次推送记录在案"仍不够——首推时被 Gist 截断(truncated)的分片可能
+    // 被记录进 prev 但云端实际不存在（或已损坏），删除仍 422。因此清理前先 GET 云端真实
+    // 文件清单（GET 配额 5000/h 充足，不烧写配额），只删除"prev 记录在案 && 云端真实存在"的分片。
     if (shards.length > 0) {
       try {
         const prev = this._getShardHashes();
+        const cloudNames = await this._getCloudFileList();
         if (prev && typeof prev === 'object') {
           Object.keys(prev).forEach(nm => {
-            if (!shardNames.includes(nm)) filesPayload[nm] = null;
+            if (!shardNames.includes(nm) && cloudNames.indexOf(nm) >= 0) filesPayload[nm] = null;
           });
         }
       } catch (e) {}
