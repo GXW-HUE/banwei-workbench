@@ -181,25 +181,28 @@ const App = {
     });
 
     // 文件导入（根据扩展名自动判断格式，支持一次选择多个文件批量上传）
-    document.getElementById('file-input').addEventListener('change', (e) => {
+    // v50：逐个 await，异步失败也能计入 fail，并提示具体失败文件名
+    document.getElementById('file-input').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files || []);
       const moduleId = this.importTargetModule;
       if (files.length && moduleId) {
         let ok = 0, fail = 0;
+        const failNames = [];
         const total = files.length;
-        files.forEach((file, i) => {
+        for (const file of files) {
           try {
             this.importTargetModule = moduleId;
-            this.handleImportFile(file);
+            await this.handleImportFile(file);
             ok++;
           } catch (err) {
             fail++;
+            failNames.push(file.name);
             console.error('导入失败:', file.name, err);
           }
-        });
+        }
         this.importTargetModule = null;
         if (total > 1) {
-          this.toast(`批量导入完成：成功 ${ok} 个${fail ? '，失败 ' + fail + ' 个' : ''}`, fail ? 'warning' : 'success');
+          this.toast(`批量导入完成：成功 ${ok} 个${fail ? '，失败 ' + fail + ' 个' : ''}${failNames.length ? '：' + failNames.join('、') : ''}`, fail ? 'warning' : 'success');
           // 批量上传后立即同步云端，避免退出后记录丢失
           Store.syncNow().then(res => {
             if (res.push && res.push.success) {
@@ -1265,53 +1268,63 @@ const App = {
   },
 
   // 根据文件扩展名自动处理导入
+  // v50 修复：返回 Promise。此前是同步函数，而 importAsAttachment/importExcel 内部
+  // FileReader 异步读取，失败在回调里发生，外层同步 try/catch 捕获不到 → 批量导入时
+  // 失败文件被误报为"导入成功"，同时冒出"文件解析失败"。现在异步失败会 reject，
+  // 由 change 事件统一计入 fail 并提示具体文件名。
   handleImportFile(file) {
-    const ext = file.name.split('.').pop().toLowerCase();
-    const moduleId = this.importTargetModule;
+    return new Promise((resolve, reject) => {
+      const ext = file.name.split('.').pop().toLowerCase();
+      const moduleId = this.importTargetModule;
 
-    // 文件型模块：上传一个文件就存为一个文件附件，不解析成表格记录
-    if (MODULE_CONFIG[moduleId] && MODULE_CONFIG[moduleId].type === 'file') {
-      const fmtMap = {xlsx:'excel', xls:'excel', csv:'excel', doc:'word', docx:'word', pdf:'pdf', ppt:'ppt', pptx:'ppt'};
-      const fmt = fmtMap[ext] || 'excel';
-      Exporter.importAsAttachment(moduleId, file, fmt, this.importLabelValue);
-      this.importLabelValue = null;
-      return;
-    }
-
-    // 大文件友好提示（不阻止导入，但提醒用户可能存储较慢或失败）
-    if (file.size > 10 * 1024 * 1024) {
-      const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-      this.toast(`文件较大（${sizeMB}MB），正在处理，请稍候...`, 'warning');
-    }
-
-    if (moduleId === '_backup' || ext === 'json') {
-      Exporter.importBackup(file);
-      return;
-    }
-
-    if (['xlsx', 'xls', 'csv'].includes(ext)) {
-      Exporter.importExcel(moduleId, file, this.importLabelValue);
-      this.importLabelValue = null;
-    } else if (['doc', 'docx'].includes(ext)) {
-      const supportedWordModules = ['weekly', 'monthly', 'meeting', 'activity', 'talk', 'friendship'];
-      if (ext === 'docx' && supportedWordModules.includes(moduleId)) {
-        Exporter.importWord(moduleId, file);
-      } else {
-        Exporter.importAsAttachment(moduleId, file, 'word');
+      // 文件型模块：上传一个文件就存为一个文件附件，不解析成表格记录
+      if (MODULE_CONFIG[moduleId] && MODULE_CONFIG[moduleId].type === 'file') {
+        const fmtMap = {xlsx:'excel', xls:'excel', csv:'excel', doc:'word', docx:'word', pdf:'pdf', ppt:'ppt', pptx:'ppt'};
+        const fmt = fmtMap[ext] || 'excel';
+        Exporter.importAsAttachment(moduleId, file, fmt, this.importLabelValue)
+          .then(() => resolve()).catch(err => reject(err));
+        this.importLabelValue = null;
+        return;
       }
-    } else if (ext === 'pdf') {
-      Exporter.importAsAttachment(moduleId, file, 'pdf');
-    } else if (['ppt', 'pptx'].includes(ext)) {
-      Exporter.importAsAttachment(moduleId, file, 'ppt');
-    } else if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) {
-      if (moduleId === 'schedule') {
-        this.importScheduleImage(file);
-      } else {
-        this.toast('图片仅支持导入到"课表安排"模块', 'warning');
+
+      // 大文件友好提示（不阻止导入，但提醒用户可能存储较慢或失败）
+      if (file.size > 10 * 1024 * 1024) {
+        const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+        this.toast(`文件较大（${sizeMB}MB），正在处理，请稍候...`, 'warning');
       }
-    } else {
-      this.toast('不支持的文件格式，请上传 Excel / 图片 / Word / PDF / PPT 文件', 'warning');
-    }
+
+      if (moduleId === '_backup' || ext === 'json') {
+        Exporter.importBackup(file).then(() => resolve()).catch(err => reject(err));
+        return;
+      }
+
+      if (['xlsx', 'xls', 'csv'].includes(ext)) {
+        Exporter.importExcel(moduleId, file, this.importLabelValue)
+          .then(() => resolve()).catch(err => reject(err));
+        this.importLabelValue = null;
+      } else if (['doc', 'docx'].includes(ext)) {
+        const supportedWordModules = ['weekly', 'monthly', 'meeting', 'activity', 'talk', 'friendship'];
+        if (ext === 'docx' && supportedWordModules.includes(moduleId)) {
+          Exporter.importWord(moduleId, file).then(() => resolve()).catch(err => reject(err));
+        } else {
+          Exporter.importAsAttachment(moduleId, file, 'word').then(() => resolve()).catch(err => reject(err));
+        }
+      } else if (ext === 'pdf') {
+        Exporter.importAsAttachment(moduleId, file, 'pdf').then(() => resolve()).catch(err => reject(err));
+      } else if (['ppt', 'pptx'].includes(ext)) {
+        Exporter.importAsAttachment(moduleId, file, 'ppt').then(() => resolve()).catch(err => reject(err));
+      } else if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) {
+        if (moduleId === 'schedule') {
+          this.importScheduleImage(file).then(() => resolve()).catch(err => reject(err));
+        } else {
+          this.toast('图片仅支持导入到"课表安排"模块', 'warning');
+          reject(new Error('图片仅支持导入到课表安排模块'));
+        }
+      } else {
+        this.toast('不支持的文件格式，请上传 Excel / 图片 / Word / PDF / PPT 文件', 'warning');
+        reject(new Error('不支持的文件格式'));
+      }
+    });
   },
 
   // ===== 课表图片识别导入（OCR） =====

@@ -1013,24 +1013,25 @@ const Exporter = {
   // ============================
 
   importExcel(moduleId, file, label) {
-    const config = MODULE_CONFIG[moduleId];
-    if (!config) return;
+    return new Promise((resolve, reject) => {
+      const config = MODULE_CONFIG[moduleId];
+      if (!config) { reject(new Error('模块不存在')); return; }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const ext = file.name.split('.').pop().toLowerCase();
-        let wb;
-        if (ext === 'csv') {
-          // CSV 文件必须先用 UTF-8 解码，否则中文表头会乱码导致字段映射失败
-          const text = new TextDecoder('utf-8').decode(e.target.result);
-          wb = XLSX.read(text, { type: 'string' });
-        } else {
-          const data = new Uint8Array(e.target.result);
-          wb = XLSX.read(data, { type: 'array' });
-        }
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const ext = file.name.split('.').pop().toLowerCase();
+          let wb;
+          if (ext === 'csv') {
+            // CSV 文件必须先用 UTF-8 解码，否则中文表头会乱码导致字段映射失败
+            const text = new TextDecoder('utf-8').decode(e.target.result);
+            wb = XLSX.read(text, { type: 'string' });
+          } else {
+            const data = new Uint8Array(e.target.result);
+            wb = XLSX.read(data, { type: 'array' });
+          }
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
 
         if (config.type === 'schedule') {
           this.importScheduleFromSheet(ws, moduleId);
@@ -1089,11 +1090,16 @@ const Exporter = {
           App.toast(`📥 成功导入 ${validRecords.length} 条记录${skipped > 0 ? '（已自动跳过 ' + skipped + ' 条空行）' : ''}`, 'success');
         }
       } catch (err) {
-        console.error('导入失败:', err);
-        App.toast('导入失败，请检查文件格式', 'error');
+        console.error('导入失败:', file.name, err);
+        App.toast('导入失败：「' + file.name + '」请检查文件格式', 'error');
+        reject(err);
+        return;
       }
+      resolve();
     };
+    reader.onerror = () => reject(new Error('读取文件失败'));
     reader.readAsArrayBuffer(file);
+    });
   },
 
   // ===== 周末去向登记表专用解析（双栏并排，表头在第3行） =====
@@ -1590,21 +1596,28 @@ const Exporter = {
   },
 
   importBackup(file) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = JSON.parse(e.target.result);
-        if (Store.importAll(data)) {
-          App.toast('💾 数据恢复成功', 'success');
-          App.renderModule(App.currentModule);
-        } else {
-          App.toast('数据格式错误', 'error');
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (Store.importAll(data)) {
+            App.toast('💾 数据恢复成功', 'success');
+            App.renderModule(App.currentModule);
+            resolve();
+          } else {
+            App.toast('数据格式错误', 'error');
+            reject(new Error('数据格式错误'));
+          }
+        } catch (err) {
+          console.error('备份文件解析失败:', file.name, err);
+          App.toast('文件解析失败：「' + file.name + '」不是有效的备份JSON', 'error');
+          reject(err);
         }
-      } catch (err) {
-        App.toast('文件解析失败', 'error');
-      }
-    };
-    reader.readAsText(file);
+      };
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.readAsText(file);
+    });
   },
 
   // 导入 Word（docx）文件：用 mammoth 解析内容，自动创建记录并保存原文件附件
@@ -1661,47 +1674,54 @@ const Exporter = {
   },
 
   // 将非 Excel 文件作为附件保存到文件中心
+  // v50：返回 Promise，异步失败 reject（批量导入能精确统计失败文件）
   importAsAttachment(moduleId, file, format, label) {
-    const config = MODULE_CONFIG[moduleId];
-    const fmt = FILE_FORMATS.find(f => f.id === format);
-    if (!config || !fmt) return;
+    return new Promise((resolve, reject) => {
+      const config = MODULE_CONFIG[moduleId];
+      const fmt = FILE_FORMATS.find(f => f.id === format);
+      if (!config || !fmt) { reject(new Error('模块或格式不存在')); return; }
 
-    // 不限制文件大小（用户要求），仅提示大文件处理较慢
-    if (file.size > 20 * 1024 * 1024) {
-      App.toast('文件较大（' + (file.size/1024/1024).toFixed(1) + 'MB），正在保存，请稍候...', 'warning');
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const base64 = e.target.result.split(',')[1];
-        const mimeType = e.target.result.split(',')[0].split(':')[1].split(';')[0];
-        // 考勤模块：导入时填写的周次/月份自动标注到文件名（不修改原文件内容）
-        let saveName = file.name;
-        if (label) {
-          const clean = String(label).replace(/[\\/:*?"<>|]/g, '').trim();
-          if (clean) saveName = '【' + clean + '】' + saveName;
-        }
-        Store.addFile({
-          name: saveName,
-          module: moduleId,
-          moduleTitle: config.title,
-          type: format,
-          label: fmt.label,
-          icon: fmt.icon,
-          recordCount: 0,
-          isAttachment: true,
-          mimeType: mimeType,
-          content: base64,
-          size: file.size
-        });
-        App.toast(`${fmt.label} 文件已保存${label ? '（' + label + '）' : ''}`, 'success');
-        if (App.currentModule) App.renderModule(App.currentModule);
-      } catch (err) {
-        App.toast('文件保存失败', 'error');
+      // 不限制文件大小（用户要求），仅提示大文件处理较慢
+      if (file.size > 20 * 1024 * 1024) {
+        App.toast('文件较大（' + (file.size/1024/1024).toFixed(1) + 'MB），正在保存，请稍候...', 'warning');
       }
-    };
-    reader.readAsDataURL(file);
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const base64 = e.target.result.split(',')[1];
+          const mimeType = e.target.result.split(',')[0].split(':')[1].split(';')[0];
+          // 考勤模块：导入时填写的周次/月份自动标注到文件名（不修改原文件内容）
+          let saveName = file.name;
+          if (label) {
+            const clean = String(label).replace(/[\\/:*?"<>|]/g, '').trim();
+            if (clean) saveName = '【' + clean + '】' + saveName;
+          }
+          Store.addFile({
+            name: saveName,
+            module: moduleId,
+            moduleTitle: config.title,
+            type: format,
+            label: fmt.label,
+            icon: fmt.icon,
+            recordCount: 0,
+            isAttachment: true,
+            mimeType: mimeType,
+            content: base64,
+            size: file.size
+          });
+          App.toast(`${fmt.label} 文件已保存${label ? '（' + label + '）' : ''}`, 'success');
+          if (App.currentModule) App.renderModule(App.currentModule);
+          resolve();
+        } catch (err) {
+          console.error('附件保存失败:', file.name, err);
+          App.toast('文件保存失败：「' + file.name + '」' + (err && err.message ? '：' + err.message : ''), 'error');
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.readAsDataURL(file);
+    });
   },
 
   // ============================
