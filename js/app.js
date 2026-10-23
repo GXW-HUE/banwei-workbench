@@ -189,9 +189,12 @@ const App = {
         let ok = 0, fail = 0;
         const failNames = [];
         const total = files.length;
+        // v51：批量多选时共用同一个周次/月份标识（仅第一个文件后置空，避免后续文件丢失 label）
+        const sharedLabel = this.importLabelValue;
         for (const file of files) {
           try {
             this.importTargetModule = moduleId;
+            this.importLabelValue = sharedLabel;
             await this.handleImportFile(file);
             ok++;
           } catch (err) {
@@ -201,6 +204,7 @@ const App = {
           }
         }
         this.importTargetModule = null;
+        this.importLabelValue = null;
         if (total > 1) {
           this.toast(`批量导入完成：成功 ${ok} 个${fail ? '，失败 ' + fail + ' 个' : ''}${failNames.length ? '：' + failNames.join('、') : ''}`, fail ? 'warning' : 'success');
           // 批量上传后立即同步云端，避免退出后记录丢失
@@ -1420,9 +1424,10 @@ const App = {
     } else {
       input.accept = '.xlsx,.xls,.doc,.docx,.pdf,.ppt,.pptx,.json';
     }
-    // 考勤三模块/课表：需要逐个填写周次/月份/确认，保持单文件；其余模块支持一次多选批量上传
-    input.multiple = !(moduleId === 'weekend' || moduleId === 'leave' || moduleId === 'absence' || moduleId === 'schedule');
-    // 考勤三模块：先弹窗让用户填写 周次/月份 标识，再选择文件导入
+    // 全部模块支持一次多选批量上传（v51：考勤也放开 multiple，避免手机端一次选多个文件被浏览器丢弃只剩第一个；
+    // 课表保持单文件——图片 OCR 需要逐个确认）
+    input.multiple = moduleId !== 'schedule';
+    // 考勤三模块：先弹窗让用户填写 周次/月份 标识，再选择文件导入（支持一次选多个文件，共用同一标识）
     if (moduleId === 'weekend' || moduleId === 'leave' || moduleId === 'absence') {
       this.promptImportLabel(moduleId);
       return;

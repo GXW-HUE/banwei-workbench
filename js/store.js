@@ -1046,7 +1046,22 @@ const Store = {
     const N_SLOTS = 16;             // 固定主桶数
     const SHARD_MAX = 600000;       // 单个桶最大字符数（Gist 单文件 ~1MB、单 gist 总量 1MB 双上限，留充足余量）
     const CHUNK = 420000;           // 单个内容块最大字符数（大文件按此切块）
-    const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
+    // v51 总量保护：Gist 单 gist 总量硬上限 ~1MB，超限后 GitHub 会截断分片，
+    // 导致其他设备拉取不完整——这正是历史"手机端看不到最新数据/数据不同步"的根因。
+    // 这里给分片内容设总预算 780KB（分片为纯 ASCII，字符≈字节），data.json 约 103~150KB（UTF-8 字节），
+    // 合计 ≤930KB，留 ~100KB 余量。超预算的大文件内容不进分片（仅元数据上云，标记 cloudLimited，
+    // 其他设备显示"内容未同步"，保证记录/文件列表跨设备永远同步）。
+    const SHARD_BUDGET = 780000;
+    const withContentAll = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
+    const strippedIds = new Set();
+    let budgetLeft = SHARD_BUDGET;
+    const withContent = [];
+    withContentAll.slice().sort((a, b) => b.content.length - a.content.length).forEach(f => {
+      const cost = f.content.length + 24;   // 24 ≈ key 名开销
+      if (budgetLeft - cost >= 0) { withContent.push(f); budgetLeft -= cost; }
+      else strippedIds.add(f.id);
+    });
+    if (strippedIds.size) console.warn('[sync] Gist 总量保护：剥离大文件内容（仅同步元数据）', strippedIds.size, '个');
     // 稳定哈希：仅由文件 id 决定槽号，同一文件永远进同一槽 → 内容变更只影响单槽
     const slotOf = (id) => {
       let h = 0;
@@ -1088,7 +1103,11 @@ const Store = {
       if (curLen > 0) flush();
     }
     // _files 剥离 content（内容已拆到分片）；本机无内容的文件保持 cloudLimited=true（等上传设备补传）
+    // v51：被总量保护剥离的大文件标记 hasContent=false + cloudLimited=true（其他设备明确显示"内容未同步"）
     data._files = files.map(f => {
+      if (strippedIds.has(f.id)) {
+        return Object.assign({}, f, { content: null, cloudLimited: true, hasContent: false, contentChars: 0 });
+      }
       if (typeof f.content === 'string' && f.content.length > 0) {
         return Object.assign({}, f, { content: null, cloudLimited: false });
       }

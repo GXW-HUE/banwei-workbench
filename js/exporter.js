@@ -1697,7 +1697,7 @@ const Exporter = {
             const clean = String(label).replace(/[\\/:*?"<>|]/g, '').trim();
             if (clean) saveName = '【' + clean + '】' + saveName;
           }
-          Store.addFile({
+          const saved = Store.addFile({
             name: saveName,
             module: moduleId,
             moduleTitle: config.title,
@@ -1710,6 +1710,12 @@ const Exporter = {
             content: base64,
             size: file.size
           });
+          if (!saved) {
+            // v51：保存失败（存储满/写入异常）时如实报错并 reject，避免"上传失败却提示成功"
+            App.toast('文件保存失败：「' + saveName + '」请清理部分旧文件后重试', 'error');
+            reject(new Error('addFile 返回 null'));
+            return;
+          }
           App.toast(`${fmt.label} 文件已保存${label ? '（' + label + '）' : ''}`, 'success');
           if (App.currentModule) App.renderModule(App.currentModule);
           resolve();

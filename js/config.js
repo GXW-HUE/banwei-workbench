@@ -14,7 +14,8 @@ const FILE_FORMATS = [
   { id: 'excel', label: 'Excel', icon: '📊', ext: '.xlsx', color: '#10b981' },
   { id: 'word', label: 'Word', icon: '📝', ext: '.doc', color: '#6366f1' },
   { id: 'pdf', label: 'PDF', icon: '📄', ext: '.pdf', color: '#ef4444' },
-  { id: 'ppt', label: 'PPT', icon: '📽️', ext: '.pptx', color: '#f59e0b' }
+  { id: 'ppt', label: 'PPT', icon: '📽️', ext: '.pptx', color: '#f59e0b' },
+  { id: 'image', label: '图片', icon: '🖼️', ext: '.png', color: '#8b5cf6' }
 ];
 
 // ===== 导航分组配置 =====
