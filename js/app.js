@@ -1293,8 +1293,16 @@ const App = {
         this.toast(`文件较大（${sizeMB}MB），正在处理，请稍候...`, 'warning');
       }
 
+      // 文件中心"导入文件"（moduleId='_backup'）：按扩展名智能分流，避免 xlsx 等非 JSON 文件被当备份 JSON 解析而报"文件解析失败"
       if (moduleId === '_backup' || ext === 'json') {
-        Exporter.importBackup(file).then(() => resolve()).catch(err => reject(err));
+        if (ext === 'json') {
+          Exporter.importBackup(file).then(() => resolve()).catch(err => reject(err));
+        } else {
+          // 非 JSON 文件在文件中心导入 → 作为附件保存（module='_files' 归入文件中心）
+          const fmtMap2 = {xlsx:'excel', xls:'excel', csv:'excel', doc:'word', docx:'word', pdf:'pdf', ppt:'ppt', pptx:'ppt', png:'image', jpg:'image', jpeg:'image', webp:'image', bmp:'image'};
+          const fmt2 = fmtMap2[ext] || 'excel';
+          Exporter.importAsAttachment('_files', file, fmt2, null).then(() => resolve()).catch(err => reject(err));
+        }
         return;
       }
 
@@ -1554,7 +1562,7 @@ const App = {
     // 文件夹模式
     if (!this.currentFolder) {
       // 根目录：显示所有模块文件夹
-      const moduleOrder = ['students', 'schedule', 'duty', 'weekly', 'monthly', 'talk', 'friendship', 'meeting', 'activity', 'leaders', 'all', 'other'];
+      const moduleOrder = ['students', 'schedule', 'duty', 'weekly', 'monthly', 'talk', 'friendship', 'meeting', 'activity', 'leaders', 'all', '_files', 'other'];
       const sortedKeys = Object.keys(groups).sort((a, b) => {
         const ia = moduleOrder.indexOf(a), ib = moduleOrder.indexOf(b);
         return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
@@ -1564,7 +1572,7 @@ const App = {
       sortedKeys.forEach(key => {
         const moduleFiles = groups[key];
         const cfg = MODULE_CONFIG[key] || {};
-        const title = cfg.title || (key === 'all' ? '全部导出' : (key === 'other' ? '其他' : key));
+        const title = cfg.title || (key === 'all' ? '全部导出' : (key === '_files' ? '📁 文件中心' : (key === 'other' ? '其他' : key)));
         const icon = cfg.icon || (key === 'all' ? '📦' : '📁');
         const color = cfg.color || '#6b7280';
         const totalSize = moduleFiles.reduce((s, f) => s + (f.size || 0), 0);

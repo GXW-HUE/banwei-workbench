@@ -1677,7 +1677,7 @@ const Exporter = {
   // v50：返回 Promise，异步失败 reject（批量导入能精确统计失败文件）
   importAsAttachment(moduleId, file, format, label) {
     return new Promise((resolve, reject) => {
-      const config = MODULE_CONFIG[moduleId];
+      const config = MODULE_CONFIG[moduleId] || (moduleId === '_files' ? { title: '文件中心' } : null);
       const fmt = FILE_FORMATS.find(f => f.id === format);
       if (!config || !fmt) { reject(new Error('模块或格式不存在')); return; }
 
