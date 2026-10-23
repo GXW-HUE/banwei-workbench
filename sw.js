@@ -6,7 +6,7 @@
    - 外部 CDN 库（xlsx/jspdf/pptxgenjs 等）：缓存优先，支持弱网/离线打开已缓存的库。
    - 云同步请求（GitHub API / Gist / 代理）：完全不拦截、不缓存。
    - 始终 skipWaiting + clients.claim，新版本部署后立刻接管页面。 */
-const CACHE_NAME = 'class-workbench-v40';
+const CACHE_NAME = 'class-workbench-v41';
 
 // 云同步相关域名：数据请求一律直连网络，绝不缓存
 const CLOUD_HOSTS = [
