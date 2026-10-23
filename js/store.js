@@ -474,29 +474,56 @@ const Store = {
   },
 
   // ===== 云同步：推送数据到 Gist（仅 api.github.com 直连可写，带重试） =====
+  // 双层超时兜底：AbortController 在部分网络/代理下 abort 信号可能不生效，导致 fetch 永久挂起、
+  // 推送锁永久占用、后续所有同步全部卡死（曾致"上传成功但云端收不到"）。此处再加一层 Promise.race
+  // 硬超时：无论 abort 是否生效，30 秒内必然 reject 并释放推送锁，由外层重试/轮询补推，绝不卡死。
   async _pushOnce(body) {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 20000);
+    const abortTimer = setTimeout(() => { try { ctl.abort(); } catch (e) {} }, 20000);
+    let hardTimer = null;
+    const hard = new Promise((_, rej) => { hardTimer = setTimeout(() => rej(new Error('PUSH_HARD_TIMEOUT')), 30000); });
     try {
-      const resp = await fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
-        method: 'PATCH',
-        signal: ctl.signal,
-        headers: {
-          'Authorization': 'Bearer ' + this.CLOUD.token,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'banwei-workbench'
-        },
-        body: JSON.stringify(body)
-      });
+      const resp = await Promise.race([
+        fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
+          method: 'PATCH',
+          signal: ctl.signal,
+          headers: {
+            'Authorization': 'Bearer ' + this.CLOUD.token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'banwei-workbench'
+          },
+          body: JSON.stringify(body)
+        }),
+        hard
+      ]);
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       return true;
     } finally {
-      clearTimeout(timer);
+      clearTimeout(abortTimer);
+      if (hardTimer) clearTimeout(hardTimer);
     }
   },
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
+
+  // ===== 分片哈希（增量推送用） =====
+  // 记录上次成功推送后每个分片的内容哈希；下次推送时只重传变化的文件，未变化的跳过。
+  // 存 localStorage（仅哈希字符串，体积极小），不占 IndexedDB。
+  SHARD_HASH_KEY: 'class_workbench_shard_hashes',
+  _getShardHashes() {
+    try { return JSON.parse(localStorage.getItem(this.SHARD_HASH_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  },
+  _setShardHashes(map) {
+    try { localStorage.setItem(this.SHARD_HASH_KEY, JSON.stringify(map || {})); } catch (e) {}
+  },
+  _hashStr(s) {
+    // 快速非加密哈希：只用于判断分片内容是否变化，够用且快
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; }
+    return h.toString(36);
+  },
 
   async pushToCloud() {
     if (!this.CLOUD.enabled) return { success: false };
@@ -554,10 +581,19 @@ const Store = {
         const allData = this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
-        const body = { files: { 'data.json': { content: JSON.stringify(allData.data, null, 2) } } };
+        // 增量推送：data.json 紧凑序列化（去掉缩进，省 20~30% 体积）；分片只推"内容变化"的部分。
+        // 未变化的分片不放进 PATCH body，Gist 会保留原文件 → 每次推送体积从全量(700KB+)降到
+        // 实际变化部分(通常几十 KB)，慢网也能 10 秒内完成，不再超时卡死。
+        const body = { files: { 'data.json': { content: JSON.stringify(allData.data) } } };
+        const prevHashes = this._getShardHashes();
+        const newHashes = {};
         Object.keys(allData.filesPayload).forEach(name => {
           const v = allData.filesPayload[name];
-          body.files[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
+          if (v === null) { body.files[name] = { content: '' }; newHashes[name] = null; return; }
+          const h = this._hashStr(v);
+          newHashes[name] = h;
+          if (prevHashes[name] === h) return;   // 分片内容未变化：跳过，云端保留原分片
+          body.files[name] = { content: v };
         });
         // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
         let ok = false, lastErr = null;
@@ -575,10 +611,11 @@ const Store = {
         if (!ok) throw lastErr || new Error('push failed');
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
+        this._setShardHashes(newHashes);   // 推送成功：记录本次分片哈希，下次增量对比
         // 同步镜像到 GitHub Pages（sync/ 目录）：手机等连不上 GitHub 的设备
         // 可以直接从 gxw-hue.github.io 拉到同样数据。失败不影响主同步。
         try {
-          await this._pushRepoMirror(JSON.stringify(allData.data, null, 2), allData.filesPayload);
+          await this._pushRepoMirror(JSON.stringify(allData.data), allData.filesPayload, prevHashes, newHashes);
           this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
           this.CLOUD._canReachCloud = true;
         } catch (e) { console.warn('镜像提交失败(忽略):', e); }
@@ -598,6 +635,9 @@ const Store = {
       this.CLOUD.pushInFlight = false;
       this.CLOUD.pendingPush = true;   // 失败也标记补推，等待轮询/重试
       this._updateIndicator();
+      if (typeof App !== 'undefined' && App.toast) {
+        App.toast('云端同步失败（网络慢或服务器超时），数据已保存在本机，将自动重试', 'error');
+      }
       this.startRealtimeSync();
       return { success: false, error: String(e) };
     }
@@ -616,33 +656,58 @@ const Store = {
       const allData = this._safeCollectAllData();
       allData.data.lastModified = new Date().toISOString();
       this._setLocalModified(allData.data.lastModified);
-      const bodyFiles = { 'data.json': { content: JSON.stringify(allData.data, null, 2) } };
+      const bodyFiles = { 'data.json': { content: JSON.stringify(allData.data) } };
+      const prevHashes = this._getShardHashes();
+      const newHashes = {};
       Object.keys(allData.filesPayload).forEach(name => {
         const v = allData.filesPayload[name];
-        bodyFiles[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
+        if (v === null) { bodyFiles[name] = { content: '' }; newHashes[name] = null; return; }
+        const h = this._hashStr(v);
+        newHashes[name] = h;
+        if (prevHashes[name] === h) return;
+        bodyFiles[name] = { content: v };
       });
       const body = JSON.stringify({ files: bodyFiles });
       // keepalive：页面关闭/切后台后请求仍会继续完成
-      fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
-        method: 'PATCH',
-        keepalive: true,
-        headers: {
-          'Authorization': 'Bearer ' + this.CLOUD.token,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'banwei-workbench'
-        },
-        body: body
-      }).then(r => {
-        if (r.ok) { this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
-      }).catch(() => {});
+      // 硬超时兜底：即使 abort/keepalive 请求异常挂起，也释放资源
+      const ctl = new AbortController();
+      const abortTimer = setTimeout(() => { try { ctl.abort(); } catch (e) {} }, 15000);
+      let hardTimer = null;
+      const hard = new Promise((_, rej) => { hardTimer = setTimeout(() => rej(new Error('FLUSH_HARD_TIMEOUT')), 20000); });
+      Promise.race([
+        fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
+          method: 'PATCH',
+          keepalive: true,
+          signal: ctl.signal,
+          headers: {
+            'Authorization': 'Bearer ' + this.CLOUD.token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'banwei-workbench'
+          },
+          body: body
+        }).then(r => {
+          if (r.ok) { this._setShardHashes(newHashes); this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
+        }).catch(() => {}),
+        hard
+      ]).catch(() => {}).finally(() => { clearTimeout(abortTimer); if (hardTimer) clearTimeout(hardTimer); });
     } catch (e) {}
   },
 
   // ===== 数据镜像：把云端数据同步提交到仓库 sync/ 目录，经 GitHub Pages 发布 =====
   // 用途：gist.githubusercontent.com / api.github.com 在部分网络（手机流量）不可达，
   // 但 gxw-hue.github.io 一定可达（网站就在上面）。镜像让所有设备多一条稳定拉取通道。
-  async _pushRepoMirror(dataContent, filesPayload) {
+  // 整体 25 秒硬超时：镜像属于辅助通道，绝不允许其 fetch 挂起阻塞主同步流程。
+  async _pushRepoMirror(dataContent, filesPayload, prevHashes, newHashes) {
+    let hardTimer = null;
+    const hard = new Promise((_, rej) => { hardTimer = setTimeout(() => rej(new Error('MIRROR_HARD_TIMEOUT')), 25000); });
+    try {
+      await Promise.race([this._pushRepoMirrorInner(dataContent, filesPayload, prevHashes, newHashes), hard]);
+    } finally {
+      if (hardTimer) clearTimeout(hardTimer);
+    }
+  },
+  async _pushRepoMirrorInner(dataContent, filesPayload, prevHashes, newHashes) {
     const owner = 'GXW-HUE', repo = 'banwei-workbench', branch = 'main';
     const apiBase = 'https://api.github.com/repos/' + owner + '/' + repo + '/git/';
     const H = {
@@ -658,11 +723,13 @@ const Store = {
     const parent = ref.object.sha;
     const parentCommit = await J(await fetch(apiBase + 'commits/' + parent, { headers: H, cache: 'no-store' }));
     const baseTree = parentCommit.tree.sha;
-    // 2. 准备文件：data.json + 全部分片（null 的跳过，保留镜像里的旧分片）
+    // 2. 准备文件：data.json + 变化的分片（null 的跳过，保留镜像里的旧分片；未变化的分片不重传）
     const entries = [{ path: 'sync/data.json', mode: '100644', type: 'blob', content: dataContent }];
     Object.keys(filesPayload || {}).forEach(n => {
       const v = filesPayload[n];
-      if (typeof v === 'string' && v.length > 0) entries.push({ path: 'sync/' + n, mode: '100644', type: 'blob', content: v });
+      if (typeof v !== 'string' || v.length === 0) return;
+      if (prevHashes && newHashes && prevHashes[n] === newHashes[n]) return;  // 未变化：跳过
+      entries.push({ path: 'sync/' + n, mode: '100644', type: 'blob', content: v });
     });
     // 3. 建 blob → tree → commit → 更新引用
     for (const e of entries) {
@@ -689,7 +756,14 @@ const Store = {
     if (modified <= lastM) return;                   // 镜像已是最新，无需推送
     this.CLOUD._mirrorPushing = true;
     try {
-      await this._pushRepoMirror(JSON.stringify(all.data, null, 2), all.filesPayload);
+      // 镜像同样做增量：只提交变化的分片（未变化跳过，保留仓库旧分片）
+      const prevHashes = this._getShardHashes();
+      const newHashes = {};
+      Object.keys(all.filesPayload || {}).forEach(n => {
+        const v = all.filesPayload[n];
+        newHashes[n] = (typeof v === 'string' && v.length > 0) ? this._hashStr(v) : null;
+      });
+      await this._pushRepoMirror(JSON.stringify(all.data), all.filesPayload, prevHashes, newHashes);
       this.CLOUD._lastMirrorModified = modified;
     } catch (e) {
       console.warn('镜像补推失败(忽略):', e);
