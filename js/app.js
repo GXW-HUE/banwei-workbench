@@ -1828,19 +1828,11 @@ const App = {
           <span class="settings-value">${Store.getFiles().length} 个</span>
         </div>
         <div class="settings-row">
-<<<<<<< HEAD
-          <label>文件内容已上云</label>
-          <span class="settings-value">${(() => {
-            const fs = Store.getFiles() || [];
-            const ok = fs.filter(f => typeof f.content === 'string' && f.content.length > 0).length;
-            return ok + ' / ' + fs.length + ' 个' + (ok < fs.length ? ' ⚠️' : ' ✅');
-=======
           <label>本机文件内容完整度</label>
           <span class="settings-value">${(() => {
             const fs = Store.getFiles() || [];
             const ok = fs.filter(f => f.hasContent || (typeof f.content === 'string' && f.content.length > 0)).length;
             return ok + ' / ' + fs.length + ' 个' + (ok < fs.length ? ' ⚠️ 有缺失' : ' ✅');
->>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
           })()}</span>
         </div>
         <div class="settings-row">
@@ -1862,6 +1854,26 @@ const App = {
         <div class="settings-row">
           <label>导出全部数据（Excel/Word/PDF/PPT）</label>
           <button class="btn btn-sm btn-success" onclick="App.openExportModal('all')">📤 选择格式导出</button>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h3>☁️ 云端数据恢复</h3>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+          如果某台设备（如手机）首页数字明显少于电脑，说明它没拉到最新云端数据。点下面按钮会忽略本机空数据，强制以云端完整数据为准恢复。
+        </div>
+        <div class="settings-row">
+          <label>云端拉取状态</label>
+          <span class="settings-value">${(() => {
+            const cl = Store.CLOUD || {};
+            return cl._lastPullChannel
+              ? (cl._lastPullChannel + ' · ' + String(cl._lastPullAt || '').slice(0, 16).replace('T', ' '))
+              : '⚠️ 本设备从未成功连上云端';
+          })()}</span>
+        </div>
+        <div class="settings-row">
+          <label>强制从云端恢复记录</label>
+          <button class="btn btn-sm btn-primary" onclick="App.forceRestoreFromCloud()">☁️ 强制恢复</button>
         </div>
       </div>
 
@@ -1947,6 +1959,34 @@ const App = {
     }
   },
 
+  // ===== 强制从云端恢复：以云端为准覆盖本机记录（解决升级/缓存导致本机数据为空） =====
+  async forceRestoreFromCloud() {
+    const Store = window.Store;
+    if (!Store || !Store.CLOUD || !Store.CLOUD.enabled) {
+      this.toast('云端同步未启用，无法恢复', 'error'); return;
+    }
+    this.showConfirm('☁️ 强制从云端恢复', '将以云端数据为准覆盖本机记录（不会删除本机文件内容）。如果电脑上的数字是对的、手机上是空的，用这个功能恢复。确定继续吗？', async () => {
+      this.toast('正在从云端强制恢复…', 'info');
+      try {
+        const result = await Store.fetchFromCloud();
+        if (result && result.success && result.hasData && result.data) {
+          Store._applyCloudData(result.data);
+          Store._markMerged();
+          Store._setLocalModified(result.data.lastModified || new Date().toISOString());
+          localStorage.setItem(Store.SYNC_KEY, String(Date.now()));
+          this.toast('✅ 已从云端恢复数据', 'success');
+          this.renderModule(this.currentModule || 'dashboard');
+        } else if (result && result.success && !result.hasData) {
+          this.toast('⚠️ 云端没有数据可恢复', 'warning');
+        } else {
+          this.toast('⚠️ 云端拉取失败：' + (result && result.reason ? result.reason : '未知'), 'warning');
+        }
+      } catch (e) {
+        this.toast('恢复失败：' + String(e), 'error');
+      }
+    });
+  },
+
   // ===== 强制更新：注销 Service Worker + 清空缓存并重载（保留本机数据） =====
   forceUpdate() {
     this.showConfirm('🔄 强制更新', '将清除浏览器缓存并重新加载最新版本（不会删除本机数据和文件），确定继续吗？', () => {
@@ -1969,15 +2009,12 @@ const App = {
     });
   },
 
-<<<<<<< HEAD
-=======
   // ===== 一键补传：把本机所有文件内容强制上传到云端 =====
   async forceUploadFiles() {
     const Store = window.Store;
     if (!Store || typeof Store.pushToCloud !== 'function') { this.toast('同步模块未就绪', 'error'); return; }
     this.toast('正在把本机文件内容补传到云端…', 'info');
     try { await Store._refreshContentCache(); } catch (e) {}
-    // 标记脏并触发推送（pull-before-push 会先合并云端，再把本机全部内容带上云）
     try { Store._setDirty(); } catch (e) {}
     let r;
     try { r = await Store.pushToCloud(); } catch (e) { r = { success: false }; }
@@ -1991,7 +2028,6 @@ const App = {
     if (typeof this.renderModule === 'function') { try { this.renderModule('settings'); } catch (e) {} }
   },
 
->>>>>>> ce68301 (v20261019-31: 修复换设备/刷新后推送会丢失其他设备文件内容 + 设置页新增一键补传)
   resetData() {
     this.showConfirm('重置数据', '确定要重置为示例数据吗？当前数据将被覆盖！', () => {
       // 清除所有模块数据和文件中心

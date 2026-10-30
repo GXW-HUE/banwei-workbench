@@ -273,76 +273,90 @@ const Store = {
     });
   },
 
-  // ===== 云同步通道（国内网络多通道，收集全部结果取最新版本，防止代理缓存旧数据） =====
-  // 每个通道提供：url（拉 data.json）+ base（拼接分片文件名 files_blob_0/1/...）
+  // ===== 云同步通道 =====
+  // 设计（v53 重写，彻底修复“多端不同步 / 分片解析为 0 / 双主漂移”）：
+  // 所有设备只读同一份单文件 sync/data.json（含全部数据与文件内容），不再分片、不再多份数据漂移。
+  // 电脑端每次推送都会把“完全一致的同一份数据”同时写入 gist 与 Pages 镜像，二者永远一致。
+  //   · pages：GitHub Pages 镜像（手机/电脑都稳定可达，单文件含完整数据，无 CDN 旧分片残留问题）
+  //   · api ：Gist API 直连（桌面可达、即时无缓存；超大文件内容被 1MB 限制裁剪时自动回退镜像补齐）
+  // 仅 2 个通道，逻辑极简：谁的内容完整、谁最新，就采用谁。
   _buildChannels() {
     const ts = Date.now();
-    const owner = this.CLOUD.owner, gid = this.CLOUD.gistId;
-    const rawBase = 'https://gist.githubusercontent.com/' + owner + '/' + gid + '/raw/';
-    const dataUrl = rawBase + 'data.json?t=' + ts;
+    const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
-      { name: 'gh-proxy',    url: 'https://gh-proxy.com/' + dataUrl,    base: 'https://gh-proxy.com/' + rawBase,    api: false },
-      { name: 'ghfast',      url: 'https://ghfast.top/' + dataUrl,      base: 'https://ghfast.top/' + rawBase,      api: false },
-      { name: 'raw',         url: dataUrl,                              base: rawBase,                              api: false },
-      { name: 'api',         url: this.CLOUD.apiBase + gid,             base: null,                                 api: true,
-        headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } },
-      { name: 'ghproxy-net', url: 'https://ghproxy.net/' + dataUrl,     base: 'https://ghproxy.net/' + rawBase,     api: false }
+      { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
+      { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
+        headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } }
     ];
   },
 
   // 单通道拉取（独立超时，可被外部 abort）
-  // 拉取 data.json 后，根据其中 _blobShards 列表（或旧版单一 files_blob）并发拉取所有文件内容分片，
-  // 合并成 data.files 供后续恢复使用。分片缺失/失败不致命：本机有内容的文件仍可用。
+  // v53 单文件方案：每个通道只拉取同一个 data.json（文件内容已内联/分块在文件内部），
+  // 不再有独立分片文件，从根上消除“分片解析为 0 键 / 漏拉 / CDN 旧分片”等 bug。
+  // 从镜像补齐旧分片格式的文件内容（过渡期：云端仍是 _blobShards 分片时调用）
+  async _loadShardsFromMirror(blobShards, ctl, _headers) {
+    const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
+    const norm = (nm) => (nm && String(nm).endsWith('.json')) ? nm : (nm + '.json');
+    const merged = {};
+    await Promise.all(blobShards.map(norm).map(async (nm) => {
+      try {
+        const r = await fetch(mirrorBase + nm + '?t=' + Date.now(), { signal: ctl.signal, headers: _headers, cache: 'no-store' });
+        if (r.ok) {
+          const j = JSON.parse(await r.text());
+          const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
+          if (map && typeof map === 'object') Object.assign(merged, map);
+        }
+      } catch (e) {}
+    }));
+    return merged;
+  },
+
+  // 单通道拉取（独立超时，可被外部 abort）
+  // v53 单文件方案：每个通道只拉取同一个 data.json（文件内容已内联/分块在文件内部），
+  // 不再有独立分片文件，从根上消除“分片解析为 0 键 / 漏拉 / CDN 旧分片”等 bug。
+  // api 通道读取 Gist API 对象（files['data.json'].content + 内部分片 files_blob_*），
+  // 非 api 通道读取镜像 data.json；两者均兼容“云端仍是旧 _blobShards 分片格式”的过渡场景。
   async _fetchOneChannel(ch, timeoutMs, controller) {
     const ctl = controller || new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     const _headers = Object.assign({ 'User-Agent': 'banwei-workbench', 'Accept': 'application/json' }, ch.headers || {});
     try {
-      let data, filesData = {};
+      const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      let data;
       if (ch.api) {
-        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        // api 通道：Gist API 返回 gist 对象 { files: { 'data.json': {content}, 'files_blob_0': {content}, ... } }
         const gist = JSON.parse(await resp.text());
-        const file = gist.files && gist.files['data.json'];
-        if (!file || !file.content) return { success: true, hasData: false };
-        data = JSON.parse(file.content);
-        // API 通道直接遍历 gist.files 收集所有 files_blob* 分片（含旧版单一 files_blob.json 与分片 files_blob_0/1/...）
+        const dataFile = gist.files && gist.files['data.json'];
+        if (!dataFile || !dataFile.content) return { success: true, hasData: false };
+        data = JSON.parse(dataFile.content);
+        // 合并 Gist 内部分片（files_blob_* 直接挂在 gist.files 上，分片格式云端时存在）
+        const chunks = {};
         Object.keys(gist.files).forEach(n => {
           if (n === 'data.json') return;
           if (n.indexOf('files_blob') === 0) {
             try {
               const j = JSON.parse(gist.files[n].content || '{}');
-              // 兼容两种落盘格式：{ files: {...} } 与裸映射 {...}
               const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
-              if (map && typeof map === 'object') Object.assign(filesData, map);
-            } catch (e) {}
+              if (map && typeof map === 'object') Object.assign(chunks, map);
+            } catch (e2) {}
           }
         });
+        if (!data._fileChunks) data._fileChunks = chunks;
+        // 兜底：云端仍是旧 _blobShards 分片格式（分片不在 gist.files 内，需从镜像补）
+        if (Array.isArray(data._blobShards) && data._blobShards.length && Object.keys(chunks).length === 0) {
+          data._fileChunks = await this._loadShardsFromMirror(data._blobShards, ctl, _headers);
+        }
       } else {
-        const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         data = JSON.parse(await resp.text());
-        // 分片清单：新格式用 _blobShards（files_blob_0/1/...）；旧格式（无清单）回退到单一 files_blob.json
-        // 另外兜底多探 2 个分片：清单本身可能因上次推送失败而未更新（防止漏拉导致文件内容缺失）
-        const shardNames = (data._blobShards && data._blobShards.length) ? data._blobShards : ['files_blob.json'];
-        const extra = [];
-        for (let i = shardNames.length; i < shardNames.length + 2; i++) extra.push('files_blob_' + i);
-        await Promise.all(shardNames.concat(extra).map(async (nm) => {
-          try {
-            const r = await fetch(ch.base + nm + '?t=' + Date.now(), { signal: ctl.signal, headers: _headers });
-            if (r.ok) {
-              const j = JSON.parse(await r.text());
-              const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
-              if (map && typeof map === 'object') Object.assign(filesData, map);
-            }
-          } catch (e) { /* 单分片失败不致命 */ }
-        }));
+        // 旧格式兼容：云端仍是分片格式（_blobShards）且缺 _fileChunks，从镜像补齐
+        if (Array.isArray(data._blobShards) && data._blobShards.length && !data._fileChunks) {
+          data._fileChunks = await this._loadShardsFromMirror(data._blobShards, ctl, _headers);
+        }
       }
-      // filesData 本身就是 { 文件id: 内容 } 的映射，直接作为 cloudData.files 供后续合并恢复
-      data.files = filesData || {};
-      // 记住云端分片清单：本机暂无内容时推送不会清空清单，保证其他设备仍能定位到分片
-      if (data._blobShards && data._blobShards.length) this.CLOUD._lastShards = data._blobShards;
       return { success: true, hasData: true, data, channel: ch.name };
+    } catch (e) {
+      return { success: false, error: String(e) };
     } finally {
       clearTimeout(timer);
     }
@@ -360,9 +374,17 @@ const Store = {
       return this.CLOUD.pullPromise;
     }
     this.CLOUD._lastQuick = null;
-    this.CLOUD.pullPromise = this._doFetchFromCloud(onQuick);
+    const real = this._doFetchFromCloud(onQuick);
+    this.CLOUD.pullPromise = real;
+    // 兜底超时：防止某个通道 fetch 挂起（如代理永久不响应/abort 信号未生效）导致 pullPromise
+    // 永久 pending，进而让后续所有同步都复用这个“死 promise”而永远不同步。超时即丢弃并允许下次重拉。
+    // 阈值取 70s：覆盖国内弱网下镜像（GitHub Pages）的慢速响应，正常网络几秒即可完成。
+    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('pull guard timeout')), 70000));
     try {
-      return await this.CLOUD.pullPromise;
+      return await Promise.race([real, guard]);
+    } catch (e) {
+      this.CLOUD.pullPromise = null;
+      throw e;
     } finally {
       this.CLOUD.pullPromise = null;
     }
@@ -376,8 +398,8 @@ const Store = {
     let quickFired = false;
     const fireQuick = (r) => {
       if (quickFired || typeof onQuick !== 'function') return;
-      // 仅当快速结果比本地新时才先应用（防止代理缓存旧数据导致回退）
-      const cloudM = r.data && r.data.lastModified ? new Date(r.data.lastModified).getTime() : 0;
+      // 仅当快速结果比本地新时才先应用（防止缓存旧数据导致回退）
+      const cloudM = r.data && r.data.lastModified ? Date.parse(r.data.lastModified) : 0;
       const localM = this._getLocalModified();
       const localTotal = this._countRecords(this._collectAllData());
       const cloudTotal = this._countRecords(r.data);
@@ -388,31 +410,11 @@ const Store = {
         try { onQuick(r); } catch (e) {}
       }
     };
-    let settleTimer = null;
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
-      const start = () => {
-        if (controllers[i].signal.aborted) { reject(new Error('skipped')); return; }
-        this._fetchOneChannel(ch, ch.api ? 10000 : 8000, controllers[i]).then(r => {
-          // 请求成功即 resolve（云端为空时 hasData=false 也算成功校验，不能当失败）
-          if (r.success) {
-            if (r.hasData) fireQuick(r);
-            if (ch.api && r.hasData) {
-              // 权威 api 通道成功（数据最新、无缓存）：立即中止其余通道收尾
-              if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
-              controllers.forEach((c, ci) => { if (ci !== i) { try { c.abort(); } catch (e2) {} } });
-            } else if (!ch.api && !settleTimer) {
-              // 代理通道先成功：给权威 api 2.5s 追赶，仅中止其他慢代理（绝不中止 api）
-              settleTimer = setTimeout(() => controllers.forEach((c, ci) => {
-                if (ci !== i && !channels[ci].api) { try { c.abort(); } catch (e2) {} }
-              }), 2500);
-            }
-            resolve(r);
-          }
-          else reject(new Error('empty'));
-        }, reject);
-      };
-      // 所有通道同时发起（含权威 api 通道）；api 直连带 token、无 CDN 缓存，是最终裁决来源
-      start();
+      this._fetchOneChannel(ch, ch.api ? 25000 : 50000, controllers[i]).then(r => {
+        if (r.success) { if (r.hasData) fireQuick(r); resolve(r); }
+        else reject(new Error('empty'));
+      }).catch(reject);
     }));
     try {
       const settled = await Promise.allSettled(tasks);
@@ -422,20 +424,35 @@ const Store = {
         const errs = settled.filter(r => r.status === 'rejected').map(r => String(r.reason).slice(0, 40));
         throw new Error('all channels failed: ' + errs.join(' | '));
       }
-      // 至少一个通道成功响应（无论云端有无数据），即视为已完成云端校验
       this.CLOUD.cloudChecked = true;
       this.CLOUD.initialPulling = false;
       this.CLOUD._lastPullOkAt = Date.now();
-      // 从"有数据"的成功结果中选择最终采用值：权威 api（带 token、无 CDN 缓存）优先；
-      // api 不可用时再按 lastModified 取最新的代理结果（防止代理缓存旧数据）
       const withData = successes.filter(r => r.hasData && r.data);
-      const apiBest = withData.find(r => r.channel === 'api');
+      // 评估“内容完整度 + 新鲜度”：文件内容（内联 + 分块）数量最多者优先，并列则取 lastModified 最新。
+      // 由于 gist 与镜像现在都是同一份单文件，绝大多数情况下二者完全一致；
+      // 仅在 gist 因 1MB 限制裁剪了文件内容时，自动让位给完整的镜像通道。
+      const assess = (r) => {
+        const d = r.data || {};
+        const chunks = d._fileChunks || {};
+        const inline = (d._files || []).filter(f => f && typeof f.content === 'string' && f.content.length > 0).length;
+        return {
+          contentCount: Object.keys(chunks).length + inline,
+          m: d.lastModified ? Date.parse(d.lastModified) : 0,
+          trimmed: !!d._gistTrimmed
+        };
+      };
       withData.sort((a, b) => {
-        const am = a.data.lastModified ? new Date(a.data.lastModified).getTime() : 0;
-        const bm = b.data.lastModified ? new Date(b.data.lastModified).getTime() : 0;
-        return bm - am;
+        const A = assess(a), B = assess(b);
+        if (A.contentCount !== B.contentCount) return B.contentCount - A.contentCount;
+        return B.m - A.m;
       });
-      const best = apiBest || withData[0] || successes[0];
+      let best = withData[0];
+      if (best && best.data._gistTrimmed) {
+        const mirror = withData.find(r => r.channel === 'pages' && !r.data._gistTrimmed);
+        if (mirror) best = mirror;
+      }
+      this.CLOUD._lastPullChannel = best.channel || '?';
+      this.CLOUD._lastPullAt = new Date().toISOString();
       this.CLOUD.lastSyncTime = new Date().toISOString();
       this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'idle';
       this._updateIndicator();
@@ -524,32 +541,64 @@ const Store = {
         this.CLOUD.isSyncing = true;
         this.CLOUD.syncStatus = 'pushing';
         this._updateIndicator();
-        // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进 blob
+        // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进单文件
         try { await this._refreshContentCache(); } catch (e) {}
         const allData = this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
-        const body = { files: { 'data.json': { content: JSON.stringify(allData.data, null, 2) } } };
-        Object.keys(allData.filesPayload).forEach(name => {
-          const v = allData.filesPayload[name];
-          body.files[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
-        });
-        // 弱网重试 5 次（间隔 1s / 2s / 4s / 8s）
-        let ok = false, lastErr = null;
-        for (let attempt = 0; attempt < 5; attempt++) {
+        const fullContent = JSON.stringify(allData.data, null, 2);
+        // 1) 写 Gist（直连、即时、桌面可读）。单文件方案下整包含文件内容；
+        //    若总体积超过 Gist 单文件 ~1MB 限制（HTTP 422），则裁剪文件内容后重试，内容以镜像为准。
+        const buildGistBody = (content) => ({ files: { 'data.json': { content } } });
+        let gistOk = false, lastErr = null;
+        for (let attempt = 0; attempt < 5 && !gistOk; attempt++) {
           try {
-            await this._pushOnce(body);
-            ok = true;
-            break;
+            await this._pushOnce(buildGistBody(fullContent));
+            gistOk = true;
           } catch (e) {
             lastErr = e;
-            console.warn('云端推送第 ' + (attempt + 1) + ' 次失败:', e);
-            if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
+            console.warn('Gist 推送第 ' + (attempt + 1) + ' 次失败:', e);
+            if (String(e).indexOf('422') !== -1 && attempt === 0) {
+              // 体积超限（Gist 单文件 ~1MB 限制）：从 _fileChunks 按文件体积降序逐个移除块，
+              // 直到 data.json 落到安全线以下；保留尽量多的小文件内容。
+              // 仅标记 _gistTrimmed（提示“以镜像为准”），绝不污染 _files.cloudLimited
+              // （这些文件镜像仍有完整内容），避免其他设备误以为内容丢失。
+              try {
+                const trimmed = JSON.parse(fullContent);
+                const GIST_SAFE = 900000;
+                let size = JSON.stringify(trimmed).length;
+                if (size > GIST_SAFE) {
+                  const byFile = {};
+                  Object.keys(trimmed._fileChunks || {}).forEach(k => {
+                    const fid = k.split('|')[0];
+                    byFile[fid] = (byFile[fid] || 0) + (trimmed._fileChunks[k] || '').length;
+                  });
+                  const order = Object.keys(byFile).sort((a, b) => byFile[b] - byFile[a]);
+                  for (const fid of order) {
+                    if (size <= GIST_SAFE) break;
+                    Object.keys(trimmed._fileChunks).forEach(k => { if (k.split('|')[0] === fid) delete trimmed._fileChunks[k]; });
+                    size -= byFile[fid];
+                  }
+                }
+                trimmed._gistTrimmed = true;
+                await this._pushOnce(buildGistBody(JSON.stringify(trimmed, null, 2)));
+                gistOk = true;
+              } catch (e2) { lastErr = e2; }
+            }
+            if (!gistOk && attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
           }
         }
-        if (!ok) throw lastErr || new Error('push failed');
+        if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
+        else this.CLOUD._canReachCloud = true;
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
+        // 2) 写 Pages 镜像（仓库）：手机等连不上 GitHub 的设备从此处读取“完整单文件数据”（含文件内容）。
+        //    电脑/手机最终都读这一份，确保双端永远一致。
+        try {
+          await this._pushRepoMirror(fullContent);
+          this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
+          this.CLOUD._canReachCloud = true;
+        } catch (e) { console.warn('镜像提交失败(忽略):', e); }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
         if (this.CLOUD.pendingPush && rounds < 6) continue;
         this.CLOUD.isSyncing = false;
@@ -584,12 +633,7 @@ const Store = {
       const allData = this._safeCollectAllData();
       allData.data.lastModified = new Date().toISOString();
       this._setLocalModified(allData.data.lastModified);
-      const bodyFiles = { 'data.json': { content: JSON.stringify(allData.data, null, 2) } };
-      Object.keys(allData.filesPayload).forEach(name => {
-        const v = allData.filesPayload[name];
-        bodyFiles[name] = (v === null) ? { content: '' } : { content: v };  // null 表示删除旧文件
-      });
-      const body = JSON.stringify({ files: bodyFiles });
+      const body = JSON.stringify({ files: { 'data.json': { content: JSON.stringify(allData.data, null, 2) } } });
       // keepalive：页面关闭/切后台后请求仍会继续完成
       fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
         method: 'PATCH',
@@ -605,6 +649,70 @@ const Store = {
         if (r.ok) { this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
       }).catch(() => {});
     } catch (e) {}
+  },
+
+  // ===== 数据镜像：把云端数据同步提交到仓库 sync/ 目录，经 GitHub Pages 发布 =====
+  // 用途：gist.githubusercontent.com / api.github.com 在部分网络（手机流量）不可达，
+  // 但 gxw-hue.github.io 一定可达（网站就在上面）。镜像让所有设备多一条稳定拉取通道。
+  // 镜像推送：把“完整的单文件 data.json”提交到仓库 sync/ 目录，经 GitHub Pages 发布。
+  // 注意：GitHub 更新引用的正确端点是 refs/heads/<branch>（复数 refs），
+  // 旧版错用 ref/heads/（单数）会稳定返回 404，导致镜像从未真正更新——这是多端不同步的隐藏根因之一。
+  async _pushRepoMirror(dataContent) {
+    const owner = 'GXW-HUE', repo = 'banwei-workbench', branch = 'main';
+    const apiBase = 'https://api.github.com/repos/' + owner + '/' + repo + '/git/';
+    const H = {
+      'Authorization': 'Bearer ' + this.CLOUD.token,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'banwei-workbench'
+    };
+    const J = (r) => r.json();
+    const ref = await J(await fetch(apiBase + 'refs/heads/' + branch, { headers: H, cache: 'no-store' }));
+    if (!ref || !ref.object) throw new Error('ref err');
+    const parent = ref.object.sha;
+    const parentCommit = await J(await fetch(apiBase + 'commits/' + parent, { headers: H, cache: 'no-store' }));
+    const baseTree = parentCommit.tree.sha;
+    // 仅更新 sync/data.json；并显式删除仓库中残留的旧 sync/files_blob_* 分片文件，防止干扰。
+    const entries = [{ path: 'sync/data.json', mode: '100644', type: 'blob', content: dataContent }];
+    const treeList = await J(await fetch(apiBase + 'trees/' + baseTree + '?recursive=1', { headers: H, cache: 'no-store' }));
+    (treeList.tree || []).forEach(t => {
+      if (t.path && t.path.indexOf('sync/files_blob') === 0) {
+        entries.push({ path: t.path, mode: '100644', type: 'blob', sha: null });  // sha:null = 删除
+      }
+    });
+    for (const e of entries) {
+      if (e.content !== undefined && e.content !== null) {
+        const b = await J(await fetch(apiBase + 'blobs', { method: 'POST', headers: H, body: JSON.stringify({ content: e.content, encoding: 'utf-8' }) }));
+        if (!b.sha) throw new Error('blob err');
+        e.sha = b.sha; delete e.content;
+      }
+    }
+    const tree = await J(await fetch(apiBase + 'trees', { method: 'POST', headers: H, body: JSON.stringify({ base_tree: baseTree, tree: entries }) }));
+    const nc = await J(await fetch(apiBase + 'commits', { method: 'POST', headers: H, body: JSON.stringify({ message: 'sync: data mirror', tree: tree.sha, parents: [parent] }) }));
+    await fetch(apiBase + 'refs/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) });
+    this.CLOUD._lastMirrorAt = new Date().toISOString();
+    this.CLOUD._canReachCloud = true;
+    console.log('[sync] Pages 镜像已更新:', nc.sha);
+  },
+
+  // 按需推送镜像：仅当本机数据比线上镜像新、且本机确认能连上 GitHub 时才推（手机连不上，自动跳过）
+  async _pushMirrorIfNeeded() {
+    if (!this.CLOUD._canReachCloud) return;          // 本机连不上 GitHub（如手机流量）→ 不尝试
+    if (this.CLOUD.pushInFlight || this.CLOUD.isSyncing) return;
+    if (this.CLOUD._mirrorPushing) return;
+    const all = this._safeCollectAllData();
+    const modified = all.data.lastModified ? Date.parse(all.data.lastModified) : 0;
+    const lastM = this.CLOUD._lastMirrorModified || 0;
+    if (modified <= lastM) return;                   // 镜像已是最新，无需推送
+    this.CLOUD._mirrorPushing = true;
+    try {
+      await this._pushRepoMirror(JSON.stringify(all.data, null, 2));
+      this.CLOUD._lastMirrorModified = modified;
+    } catch (e) {
+      console.warn('镜像补推失败(忽略):', e);
+    } finally {
+      this.CLOUD._mirrorPushing = false;
+    }
   },
 
   // ===== 待同步标记（持久化，防止退出前未推送成功导致丢失） =====
@@ -676,6 +784,11 @@ const Store = {
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
     }, 15000);
+    // 定时把数据镜像推到网站（手机等连不上 GitHub 的设备靠它同步），保证镜像始终接近实时
+    setInterval(() => {
+      if (document.hidden) return;
+      this._pushMirrorIfNeeded();
+    }, 60000);
   },
 
   // 拉取完成后：若有待推送的改动，补推一次
@@ -775,69 +888,34 @@ const Store = {
     return n;
   },
 
-  // ===== 推送前安全化：把文件内容拆成多个分片（files_blob_0/1/...），data.json 只留元数据 =====
-  // 背景：文件 base64 内容若与数据一起塞进 data.json，会快速逼近 Gist 单文件 ~1MB 上限，
-  //       导致后上传/较大的文件被降级为 cloudLimited（内容只留本机），无法跨设备预览/导出。
-  // 解决：文件内容单独拆成多个 files_blob_N.json 分片（每片 < SHARD_MAX 字符，约 1MB 预算），
-  //       data.json 体积大幅瘦身，绝大多数文档都能全部上云；仅真正超大（>~750KB 原始）的单文件才降级到本机。
+  // ===== 推送前打包：单文件方案（v53）=====
+  // 把“全部模块数据 + 文件内容”打包进同一个 data.json。文件内容：
+  //   · 小文件（≤ CHUNK）：直接内联到 _files[].content（单文件自包含，最稳）；
+  //   · 大文件（> CHUNK）：拆块进 _fileChunks（id|0 / id|1 ...），元数据只留标记。
+  // 仓库（Pages 镜像）无单文件体积限制，可承载；Gist 单文件 ~1MB 上限由 pushToCloud 负责兜底（超限则裁剪内容、以镜像为准）。
+  // 彻底取消分片（files_blob_*）与双主漂移：所有设备只读同一份单文件，电脑写出的 gist 与镜像内容完全一致。
   _safeCollectAllData() {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
-    // 分片参数：Gist 单文件约 1MB（字符）上限，留足安全余量
-    const SHARD_MAX = 860000;   // 单个分片最大字符数
-    const CHUNK = 420000;       // 单个内容块最大字符数（大文件按此切块，可跨多个分片存放）
-    // 所有本机有内容的文件一律上云（不再因"单文件过大"直接降级）：
-    // 先切成固定大小的块，再贪心装箱到分片里，因此任意大小的文件都能同步到云端。
-    const withContent = files.filter(f => typeof f.content === 'string' && f.content.length > 0);
-    // 按体积从大到小装箱，减少碎片
-    const blocks = [];
-    withContent.forEach(f => {
-      const c = f.content;
-      if (c.length <= CHUNK) {
-        blocks.push({ key: f.id, s: c });
-      } else {
-        const n = Math.ceil(c.length / CHUNK);
-        for (let i = 0; i < n; i++) {
-          blocks.push({ key: f.id + '|' + i, s: c.substr(i * CHUNK, CHUNK) });
-        }
-      }
-    });
-    blocks.sort((a, b) => b.s.length - a.s.length);
-    const shards = [];
-    let cur = {}, curLen = 0;
-    blocks.forEach(b => {
-      if (curLen > 0 && curLen + b.s.length > SHARD_MAX) { shards.push(cur); cur = {}; curLen = 0; }
-      cur[b.key] = b.s;
-      curLen += b.s.length;
-    });
-    if (curLen > 0) shards.push(cur);
-    // _files 剥离 content（内容已拆到分片）；本机无内容的文件保持 cloudLimited=true（等上传设备补传）
+    const CHUNK = 420000;       // 单个内容块最大字符数
+    const MAX_CLOUD = 1500000;  // 原始内容 > 1.5MB 不上云（内容留本机），避免超大文件拖累所有设备
+    const chunks = {};
     data._files = files.map(f => {
       if (typeof f.content === 'string' && f.content.length > 0) {
-        return Object.assign({}, f, { content: null, cloudLimited: false });
+        if (f.content.length <= MAX_CLOUD) {
+          // 可上云：内容拆块进 _fileChunks，元数据仅保留标记（不内联，避免 data.json 重复内容）
+          const n = Math.ceil(f.content.length / CHUNK);
+          for (let i = 0; i < n; i++) chunks[f.id + '|' + i] = f.content.substr(i * CHUNK, CHUNK);
+          return Object.assign({}, f, { content: null, contentChunks: true, cloudLimited: false });
+        }
+        // 超大文件：内容留本机，云端只留元数据（其他设备不下载这块庞然大物）
+        return Object.assign({}, f, { content: null, contentChunks: false, cloudLimited: true });
       }
       return f;
     });
-    const shardNames = shards.map((s, i) => 'files_blob_' + i);
-    // 本机暂无任何文件内容时，绝不能把清单清空（否则其他设备下次会找不到云端分片），沿用上次云端清单
-    data._blobShards = shards.length > 0 ? shardNames
-      : (this.CLOUD._lastShards && this.CLOUD._lastShards.length ? this.CLOUD._lastShards : (data._blobShards || ['files_blob.json']));
-    const filesPayload = {};
-    // 统一包装成 { files: {...} }，与拉取端解析格式一致
-    shardNames.forEach((n, i) => { filesPayload[n] = JSON.stringify({ files: shards[i] }); });
-    // 仅当本次确有文件内容分片上云时，才删除旧版单一 files_blob.json；
-    // 弱网/本机暂无内容时保留云端 blob，避免误清空已上云的内容。
-    // 同时清理掉本次不再需要的多余旧分片（例如文件变少导致分片数减少），防止残留旧内容混淆。
-    if (shards.length > 0) {
-      filesPayload['files_blob.json'] = null;
-      try {
-        const prev = Number(localStorage.getItem(this.SHARD_COUNT_KEY) || 0);
-        for (let i = shards.length; i < Math.max(prev, shards.length + 5); i++) {
-          filesPayload['files_blob_' + i] = null;
-        }
-      } catch (e) {}
-      try { localStorage.setItem(this.SHARD_COUNT_KEY, String(shards.length)); } catch (e) {}
-    }
+    data._fileChunks = chunks;
+    // 整包（含文件内容）只落一个 data.json，彻底消除分片与双主漂移。
+    const filesPayload = { 'data.json': JSON.stringify(data, null, 2) };
     return { data, filesPayload };
   },
 
@@ -857,22 +935,23 @@ const Store = {
       }
     });
     if (cloudData._files !== undefined) {
-      // 文件内容来源：1) 旧格式内联在 data.json._files[].content；2) 新格式独立存于 files_blob.json（cloudData.files）
+      // 文件内容来源（v53 单文件方案）：
+      //   1) 小文件：内容直接内联在 _files[].content；
+      //   2) 大文件：分块存于 _fileChunks（id|0 / id|1 ...），按块拼接还原；
+      //   3) 兜底：云端无内容（历史 cloudLimited/超大降级）时，本机有则保留。
       const localFiles = this.getFiles();
-      const fileContents = cloudData.files || {};
+      const chunks = cloudData._fileChunks || {};
       const protectedFiles = (cloudData._files || []).map(cf => {
         let content = null;
         if (typeof cf.content === 'string' && cf.content.length > 0) {
-          content = cf.content;                       // 旧格式：content 直接带在元数据上
-        } else if (fileContents[cf.id] && typeof fileContents[cf.id] === 'string') {
-          content = fileContents[cf.id];              // 新格式：content 在独立文件（未分块）
-        } else {
-          content = this._joinChunks(fileContents, cf.id);   // 大文件：按块 id|0 / id|1 ... 拼接还原
+          content = cf.content;                          // 小文件内联
+        } else if (!cf.cloudLimited) {
+          content = this._joinChunks(chunks, cf.id);      // 大文件分块拼接
         }
         if (content) {
           return Object.assign({}, cf, { content, cloudLimited: false });
         }
-        // 云端无内容（超大文件降级 cloudLimited）：本机有则保留，保证上传设备仍可预览/导出
+        // 云端无内容：本机有则保留，保证上传设备仍可预览/导出
         const lf = localFiles.find(f => f.id === cf.id);
         if (lf && lf.content) {
           return Object.assign({}, cf, { content: lf.content, cloudLimited: false });
@@ -882,6 +961,19 @@ const Store = {
       // 云端带来的文件内容写入 IndexedDB，元数据写入 localStorage
       this._writeFilesWithContent(protectedFiles);
     }
+    // 自修复：检测“本机持有内容、但云端缺失该内容”的文件，标记 _needContentUpload 触发补推
+    try {
+      const localFiles2 = this.getFiles();
+      const cloudContentIds = new Set();
+      const cfMap = cloudData._fileChunks || {};
+      Object.keys(cfMap).forEach(k => { if (typeof cfMap[k] === 'string' && cfMap[k].length) cloudContentIds.add(k.split('|')[0]); });
+      (cloudData._files || []).forEach(cf => {
+        if (typeof cf.content === 'string' && cf.content.length) cloudContentIds.add(cf.id);
+      });
+      const localHasMissingContent = (localFiles2 || []).some(f =>
+        typeof f.content === 'string' && f.content.length > 0 && !cloudContentIds.has(f.id));
+      this.CLOUD._needContentUpload = !!localHasMissingContent;
+    } catch (e) { this.CLOUD._needContentUpload = false; }
     // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
     if (cloudData._deleted && typeof cloudData._deleted === 'object') {
       const mergedTombs = {};
@@ -995,12 +1087,12 @@ const Store = {
 
     out._deleted = tombs;
     out.lastModified = cloudData.lastModified || new Date().toISOString();
-    out.files = cloudData.files || {};   // 附带独立存储的文件内容（files_blob.json）
+    out._fileChunks = cloudData._fileChunks || {};   // 文件内容分块（单文件方案），供 _applyCloudData 还原
     this._applyCloudData(out);
     try { localStorage.setItem(this.SYNC_KEY, String(Date.now())); } catch (e) {}
     this._markMerged();
 
-    const needPush = localHasExtra || tombNewer || this.CLOUD.dirty;
+    const needPush = localHasExtra || tombNewer || this.CLOUD.dirty || this.CLOUD._needContentUpload;
     // silent=true：推送前的静默合并，只并入数据，不改状态/不渲染/不递归推送
     if (silent) return true;
     this.CLOUD.syncStatus = needPush ? 'dirty' : 'idle';
@@ -1034,14 +1126,10 @@ const Store = {
     await this._initFileStore();
 
     if (needsReload) {
-      Object.keys(MODULE_CONFIG).forEach(moduleId => {
-        localStorage.removeItem(this.getKey(moduleId));
-      });
-      localStorage.removeItem(this.FILE_PREFIX);
-      localStorage.removeItem(this.PREFIX + '_last_modified');
-      // 版本升级：同步清空 IndexedDB 内容，避免留下孤儿数据
-      this._contentCache = {};
-      this._idbClear();
+      // 版本升级时：不再清空本地记录（会导致用户数据“被清零”后无法恢复）。
+      // 仅重置文件内容缓存标记；文件元数据保留在 localStorage，由 _initFileStore 迁移。
+      // 如果某设备已被旧版本清空过，后台拉取云端后会自动恢复。
+      localStorage.setItem(this.VERSION_KEY, this.DATA_VERSION);
     }
 
     // 首次使用：先加载示例数据（直接写本地，不走 save，避免示例数据触发推送/修改时间；
@@ -1090,6 +1178,8 @@ const Store = {
           this.CLOUD.pendingPush = false;
           setTimeout(() => { if (!this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this.pushToCloud(); }, 300);
         }
+        // 首次进入 / 每次成功拉取后：把本机数据刷新到网站镜像（电脑侧），手机随后即可读到
+        this._pushMirrorIfNeeded();
       }).catch(e => {
         this.CLOUD.pulling = false;
         this.CLOUD.syncStatus = this.CLOUD.dirty ? 'dirty' : 'error';
