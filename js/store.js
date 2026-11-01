@@ -426,19 +426,39 @@ const Store = {
         try { onQuick(r); } catch (e) {}
       }
     };
-    const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
-      this._fetchOneChannel(ch, ch.api ? 110000 : 50000, controllers[i]).then(r => {
-        if (r.success) { if (r.hasData) fireQuick(r); resolve(r); }
-        else reject(new Error('empty'));
-      }).catch(reject);
-    }));
     try {
-      const settled = await Promise.allSettled(tasks);
-      controllers.forEach(c => { try { c.abort(); } catch (e) {} });
-      const successes = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
+      const successes = [];
+      const errors = [];
+      const isComplete = (data) => {
+        if (!data || !Array.isArray(data._files)) return false;
+        const chunks = data._fileChunks || {};
+        return data._files.every(file => {
+          if (!file || file.cloudLimited || !file.hasContent) return !file || !file.cloudLimited;
+          if (typeof file.content === 'string' && file.content.length) return true;
+          const count = Number(file.contentChunkCount) || 0;
+          if (!count) return false;
+          let length = 0;
+          for (let i = 0; i < count; i++) {
+            const piece = chunks[file.id + '|' + i];
+            if (typeof piece !== 'string') return false;
+            length += piece.length;
+          }
+          return !file.contentLength || length === file.contentLength;
+        });
+      };
+      // Large cloud snapshots can exhaust memory when three 9 MB copies download at once in WeChat.
+      // Read the primary proxy first and only use fallbacks when it fails or omits file content.
+      for (let i = 0; i < channels.length; i++) {
+        try {
+          const r = await this._fetchOneChannel(channels[i], channels[i].api ? 110000 : 50000, controllers[i]);
+          if (!r.success) throw new Error('empty');
+          successes.push(r);
+          if (r.hasData) fireQuick(r);
+          if (r.hasData && isComplete(r.data)) break;
+        } catch (e) { errors.push(String(e).slice(0, 80)); }
+      }
       if (successes.length === 0) {
-        const errs = settled.filter(r => r.status === 'rejected').map(r => String(r.reason).slice(0, 40));
-        throw new Error('all channels failed: ' + errs.join(' | '));
+        throw new Error('all channels failed: ' + errors.join(' | '));
       }
       this.CLOUD.cloudChecked = true;
       this.CLOUD.initialPulling = false;
