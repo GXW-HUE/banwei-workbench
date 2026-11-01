@@ -17,7 +17,7 @@ const Store = {
     owner: 'GXW-HUE',
     token: 'ghp_' + 'gJY33bsG' + 'hCzC4S4Bl' + 'KHkMdpQHo' + 'Jh742s7Gf5',
     apiBase: 'https://api.github.com/gists/',
-    workerBase: 'https://banwei-workbench-sync.3596098158.workers.dev/gists/',
+    workerBase: 'https://banwei-sync-api.pages.dev/gists/',
     debounceMs: 800,       // 修改后防抖推送间隔（快速推送，防退出丢失）
     lastPushTime: 0,
     pushTimer: null,
@@ -392,7 +392,7 @@ const Store = {
     // 兜底超时：防止某个通道 fetch 挂起（如代理永久不响应/abort 信号未生效）导致 pullPromise
     // 永久 pending，进而让后续所有同步都复用这个“死 promise”而永远不同步。超时即丢弃并允许下次重拉。
     // 阈值取 70s：覆盖国内弱网下镜像（GitHub Pages）的慢速响应，正常网络几秒即可完成。
-    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('pull guard timeout')), 70000));
+    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('pull guard timeout')), 140000));
     try {
       return await Promise.race([real, guard]);
     } catch (e) {
@@ -424,7 +424,7 @@ const Store = {
       }
     };
     const tasks = channels.map((ch, i) => new Promise((resolve, reject) => {
-      this._fetchOneChannel(ch, ch.api ? 25000 : 50000, controllers[i]).then(r => {
+      this._fetchOneChannel(ch, ch.api ? 110000 : 50000, controllers[i]).then(r => {
         if (r.success) { if (r.hasData) fireQuick(r); resolve(r); }
         else reject(new Error('empty'));
       }).catch(reject);
@@ -488,7 +488,7 @@ const Store = {
     let lastError;
     for (const target of targets) {
       const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 20000);
+      const timer = setTimeout(() => ctl.abort(), 110000);
       try {
         const resp = await fetch(target.url, {
           method: 'PATCH', signal: ctl.signal,
