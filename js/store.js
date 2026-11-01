@@ -575,33 +575,6 @@ const Store = {
           } catch (e) {
             lastErr = e;
             console.warn('Gist 推送第 ' + (attempt + 1) + ' 次失败:', e);
-            if (String(e).indexOf('422') !== -1 && attempt === 0) {
-              // 体积超限（Gist 单文件 ~1MB 限制）：从 _fileChunks 按文件体积降序逐个移除块，
-              // 直到 data.json 落到安全线以下；保留尽量多的小文件内容。
-              // 仅标记 _gistTrimmed（提示“以镜像为准”），绝不污染 _files.cloudLimited
-              // （这些文件镜像仍有完整内容），避免其他设备误以为内容丢失。
-              try {
-                const trimmed = JSON.parse(fullContent);
-                const GIST_SAFE = 900000;
-                let size = JSON.stringify(trimmed).length;
-                if (size > GIST_SAFE) {
-                  const byFile = {};
-                  Object.keys(trimmed._fileChunks || {}).forEach(k => {
-                    const fid = k.split('|')[0];
-                    byFile[fid] = (byFile[fid] || 0) + (trimmed._fileChunks[k] || '').length;
-                  });
-                  const order = Object.keys(byFile).sort((a, b) => byFile[b] - byFile[a]);
-                  for (const fid of order) {
-                    if (size <= GIST_SAFE) break;
-                    Object.keys(trimmed._fileChunks).forEach(k => { if (k.split('|')[0] === fid) delete trimmed._fileChunks[k]; });
-                    size -= byFile[fid];
-                  }
-                }
-                trimmed._gistTrimmed = true;
-                await this._pushOnce(buildGistBody(JSON.stringify(trimmed, null, 2)));
-                gistOk = true;
-              } catch (e2) { lastErr = e2; }
-            }
             if (!gistOk && attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
           }
         }
@@ -904,18 +877,12 @@ const Store = {
     const data = this._collectAllData();
     const files = Array.isArray(data._files) ? data._files : [];
     const CHUNK = 420000;       // 单个内容块最大字符数
-    const MAX_CLOUD = 1500000;  // 原始内容 > 1.5MB 不上云（内容留本机），避免超大文件拖累所有设备
     const chunks = {};
     data._files = files.map(f => {
       if (typeof f.content === 'string' && f.content.length > 0) {
-        if (f.content.length <= MAX_CLOUD) {
-          // 可上云：内容拆块进 _fileChunks，元数据仅保留标记（不内联，避免 data.json 重复内容）
-          const n = Math.ceil(f.content.length / CHUNK);
-          for (let i = 0; i < n; i++) chunks[f.id + '|' + i] = f.content.substr(i * CHUNK, CHUNK);
-          return Object.assign({}, f, { content: null, contentChunks: true, cloudLimited: false });
-        }
-        // 超大文件：内容留本机，云端只留元数据（其他设备不下载这块庞然大物）
-        return Object.assign({}, f, { content: null, contentChunks: false, cloudLimited: true });
+        const n = Math.ceil(f.content.length / CHUNK);
+        for (let i = 0; i < n; i++) chunks[f.id + '|' + i] = f.content.slice(i * CHUNK, (i + 1) * CHUNK);
+        return Object.assign({}, f, { content: null, contentChunks: true, contentChunkCount: n, contentLength: f.content.length, cloudLimited: false });
       }
       return f;
     });
@@ -952,7 +919,8 @@ const Store = {
         if (typeof cf.content === 'string' && cf.content.length > 0) {
           content = cf.content;                          // 小文件内联
         } else if (!cf.cloudLimited) {
-          content = this._joinChunks(chunks, cf.id);      // 大文件分块拼接
+          content = this._joinChunks(chunks, cf.id);
+          if (content && ((cf.contentLength && content.length !== cf.contentLength) || (cf.contentChunkCount && !Array.from({length: cf.contentChunkCount}, (_, i) => chunks[cf.id + '|' + i]).every(v => typeof v === 'string')))) content = null;      // 大文件分块拼接
         }
         if (content) {
           return Object.assign({}, cf, { content, cloudLimited: false });
