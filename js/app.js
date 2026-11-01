@@ -1742,10 +1742,14 @@ const App = {
     Exporter.exportModuleSourceFiles(moduleId, null);
   },
 
-  openFileView(fileId) {
+  async openFileView(fileId) {
     const files = Store.getFiles();
-    const file = files.find(f => f.id === fileId);
+    let file = files.find(f => f.id === fileId);
     if (!file) return;
+    if (!(typeof file.content === 'string' && file.content.length)) {
+      this.toast('正在加载文件内容…', 'info');
+      try { file = await Store.loadFileContent(fileId); } catch (e) { this.toast('文件内容暂时无法加载，请稍后重试', 'error'); return; }
+    }
     Exporter.openAttachment(file);
   },
 

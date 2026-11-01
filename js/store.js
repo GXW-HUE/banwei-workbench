@@ -287,7 +287,7 @@ const Store = {
     const ts = Date.now();
     const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
-      { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId, api: true,
+      { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId + '?meta=1', api: true,
         headers: { Authorization: 'Bearer ' + this.CLOUD.token } },
       { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
       { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
@@ -431,6 +431,7 @@ const Store = {
       const errors = [];
       const isComplete = (data) => {
         if (!data || !Array.isArray(data._files)) return false;
+        if (data._metaOnly) return true;
         const chunks = data._fileChunks || {};
         return data._files.every(file => {
           if (!file || file.cloudLimited || !file.hasContent) return !file || !file.cloudLimited;
@@ -589,6 +590,8 @@ const Store = {
           if (!persisted || this.CLOUD._filePersistFailed) throw new Error('文件内容尚未可靠保存，拒绝标记同步成功');
         }
         try { await this._refreshContentCache(); } catch (e) {}
+        const filesNeedingHydration = this.getFiles().filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
+        for (const file of filesNeedingHydration) await this.loadFileContent(file.id);
         const expectedFiles = this.getFiles();
         const allData = this._safeCollectAllData();
         if (!this._validateCloudFilePayload(allData.data, expectedFiles)) throw new Error('本机文件内容不完整，拒绝上传');
@@ -1347,6 +1350,19 @@ const Store = {
       // 缓存无内容：云端剥离的 cloudLimited 文件，或降级模式下的内联内容
       return Object.assign({}, m, { content: (m.content === undefined ? null : m.content) });
     });
+  },
+
+  async loadFileContent(fileId) {
+    const file = this.getFiles().find(item => item && item.id === fileId);
+    if (!file || (typeof file.content === 'string' && file.content.length)) return file;
+    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId + '?file=' + encodeURIComponent(fileId), { headers: { Authorization: 'Bearer ' + this.CLOUD.token }, cache: 'no-store' });
+    if (!resp.ok) throw new Error('文件内容加载失败');
+    const payload = await resp.json();
+    if (!payload || typeof payload.content !== 'string') throw new Error('文件内容为空');
+    this._contentCache[fileId] = payload.content;
+    const metas = this.getFiles().map(item => item && item.id === fileId ? Object.assign({}, item, { content: payload.content, hasContent: true, cloudLimited: false }) : item);
+    this._writeFilesWithContent(metas);
+    return Object.assign({}, file, { content: payload.content, hasContent: true, cloudLimited: false });
   },
 
   addFile(fileInfo) {

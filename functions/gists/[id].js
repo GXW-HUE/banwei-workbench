@@ -35,6 +35,36 @@ export async function onRequest({request, params}) {
       if (new TextEncoder().encode(file.content).length > LIMIT) throw new Error('Raw file too large');
       file.truncated = false;
     }
+    const requestUrl = new URL(request.url);
+    const requestedFile = requestUrl.searchParams.get('file');
+    if (requestedFile && gist.files && gist.files['data.json'] && typeof gist.files['data.json'].content === 'string') {
+      const data = JSON.parse(gist.files['data.json'].content);
+      const file = (data._files || []).find(item => item && item.id === requestedFile);
+      if (!file) return new Response(JSON.stringify({error:'file not found'}), {status:404, headers:{...cors,'Content-Type':'application/json'}});
+      const chunks = data._fileChunks || {};
+      let content = typeof file.content === 'string' ? file.content : '';
+      if (!content && file.contentChunkCount) {
+        for (let i = 0; i < file.contentChunkCount; i++) content += chunks[file.id + '|' + i] || '';
+      }
+      if (!content || (file.contentLength && content.length !== file.contentLength)) return new Response(JSON.stringify({error:'file content incomplete'}), {status:502, headers:{...cors,'Content-Type':'application/json'}});
+      return new Response(JSON.stringify({id:file.id, content}), {headers:{...cors,'Content-Type':'application/json; charset=utf-8'}});
+    }
+    if (requestUrl.searchParams.get('meta') === '1') {
+      const dataFile = gist.files && gist.files['data.json'];
+      if (dataFile && typeof dataFile.content === 'string') {
+        const data = JSON.parse(dataFile.content);
+        data._fileChunks = {};
+        data._metaOnly = true;
+        if (Array.isArray(data._files)) {
+          data._files = data._files.map(file => {
+            const copy = Object.assign({}, file);
+            if (typeof copy.content === 'string') delete copy.content;
+            return copy;
+          });
+        }
+        dataFile.content = JSON.stringify(data);
+      }
+    }
     return new Response(JSON.stringify(gist),{headers:{...cors,'Content-Type':'application/json; charset=utf-8'}});
   } catch { return new Response(JSON.stringify({error:'Upstream unavailable; local data preserved'}),{status:502,headers:{...cors,'Content-Type':'application/json'}}); }
   finally { clearTimeout(timer); }
