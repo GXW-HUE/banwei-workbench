@@ -206,39 +206,41 @@ const Store = {
   _writeFilesWithContent(files) {
     const list = Array.isArray(files) ? files : [];
     const metas = [];
+    const writes = [];
     list.forEach(f => {
       if (!f) return;
       const m = Object.assign({}, f);
-      const content = (typeof m.content === 'string' && m.content.length > 0) ? m.content : null;
+      const content = typeof m.content === 'string' && m.content.length > 0 ? m.content : null;
       if (content) {
         m.hasContent = true;
         m.contentChars = content.length;
         this._contentCache[m.id] = content;
         if (this._idbOk) {
-          // 写入 IndexedDB（异步，不阻塞界面）；失败自动重试一次，仍失败则告警，避免内容静默丢失
-          this._idbPut(m.id, content).then(ok => {
-            if (!ok) {
-              this._idbPut(m.id, content).then(ok2 => {
-                if (!ok2) console.error('文件内容写入 IndexedDB 失败:', m.id);
-              });
-            }
-          });
+          writes.push({ id: m.id, content, promise: this._idbPut(m.id, content) });
           delete m.content;
-        } else {
-          m.content = content;          // 降级：继续内联
-        }
-      } else if (this._idbOk) {
-        delete m.content;               // 无内容（云端剥离等），元数据不留大字段
-      }
+        } else m.content = content;
+      } else if (this._idbOk) delete m.content;
       metas.push(m);
     });
-    try {
-      localStorage.setItem(this.FILE_PREFIX, JSON.stringify(metas));
-      return true;
-    } catch (e) {
-      console.error('文件元数据写入失败:', e);
-      return false;
+    try { localStorage.setItem(this.FILE_PREFIX, JSON.stringify(metas)); }
+    catch (e) { console.error('文件元数据写入失败:', e); return false; }
+    if (writes.length) {
+      const persist = Promise.all(writes.map(w => w.promise)).then(async results => {
+        if (results.every(Boolean)) return true;
+        const retries = await Promise.all(writes.map((w, i) => results[i] ? Promise.resolve(true) : this._idbPut(w.id, w.content)));
+        return retries.every(Boolean);
+      }).catch(() => false);
+      this._lastFilePersist = persist;
+      persist.then(ok => {
+        if (!ok) {
+          this.CLOUD._filePersistFailed = true;
+          this.CLOUD.syncStatus = 'error';
+          this._updateIndicator();
+          if (typeof App !== 'undefined' && App.toast) App.toast('文件仅保存在当前设备，云端同步失败，请勿清理本机数据', 'error');
+        }
+      });
     }
+    return true;
   },
 
   // 标记云端数据已合并（本次运行 + 持久化），之后本地数据才可作为权威推送
@@ -498,6 +500,10 @@ const Store = {
           body: JSON.stringify(body)
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const result = await resp.json().catch(() => null);
+        const expected = body && body.files && body.files['data.json'] && body.files['data.json'].content;
+        const returned = result && result.files && result.files['data.json'] && result.files['data.json'].content;
+        if (expected && typeof returned === 'string' && returned.length < expected.length) throw new Error('Gist returned truncated data');
         return true;
       } catch (e) { lastError = e; }
       finally { clearTimeout(timer); }
@@ -558,9 +564,14 @@ const Store = {
         this.CLOUD.isSyncing = true;
         this.CLOUD.syncStatus = 'pushing';
         this._updateIndicator();
-        // 推送前先把本机 IndexedDB 中的文件内容全部载入缓存，保证所有持有内容的文件都进单文件
+        if (this._lastFilePersist) {
+          const persisted = await this._lastFilePersist;
+          if (!persisted || this.CLOUD._filePersistFailed) throw new Error('文件内容尚未可靠保存，拒绝标记同步成功');
+        }
         try { await this._refreshContentCache(); } catch (e) {}
+        const expectedFiles = this.getFiles();
         const allData = this._safeCollectAllData();
+        if (!this._validateCloudFilePayload(allData.data, expectedFiles)) throw new Error('本机文件内容不完整，拒绝上传');
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
         const fullContent = JSON.stringify(allData.data, null, 2);
@@ -663,6 +674,7 @@ const Store = {
       if (e.content !== undefined && e.content !== null) {
         const b = await J(await fetch(apiBase + 'blobs', { method: 'POST', headers: H, body: JSON.stringify({ content: e.content, encoding: 'utf-8' }) }));
         if (!b.sha) throw new Error('blob err');
+        if (typeof b.size === 'number' && b.size !== new TextEncoder().encode(e.content).length) throw new Error('mirror blob size mismatch');
         e.sha = b.sha; delete e.content;
       }
     }
@@ -890,6 +902,24 @@ const Store = {
     // 整包（含文件内容）只落一个 data.json，彻底消除分片与双主漂移。
     const filesPayload = { 'data.json': JSON.stringify(data, null, 2) };
     return { data, filesPayload };
+  },
+
+  _validateCloudFilePayload(cloudData, expectedFiles) {
+    const chunks = cloudData && cloudData._fileChunks || {};
+    for (const file of expectedFiles || []) {
+      if (!file || !file.id || typeof file.content !== 'string' || !file.content.length) continue;
+      const remote = (cloudData._files || []).find(f => f && f.id === file.id);
+      if (!remote || remote.cloudLimited) return false;
+      let content = typeof remote.content === 'string' && remote.content.length ? remote.content : this._joinChunks(chunks, file.id);
+      if (content !== file.content) return false;
+      if (remote.contentLength && remote.contentLength !== file.content.length) return false;
+      if (remote.contentChunkCount) {
+        for (let i = 0; i < remote.contentChunkCount; i++) {
+          if (typeof chunks[file.id + '|' + i] !== 'string') return false;
+        }
+      }
+    }
+    return true;
   },
 
   // ===== 从云端数据恢复到本地 =====
