@@ -17,6 +17,7 @@ const Store = {
     owner: 'GXW-HUE',
     token: 'ghp_' + 'gJY33bsG' + 'hCzC4S4Bl' + 'KHkMdpQHo' + 'Jh742s7Gf5',
     apiBase: 'https://api.github.com/gists/',
+    workerBase: 'https://banwei-workbench-sync.3596098158.workers.dev/gists/',
     debounceMs: 800,       // 修改后防抖推送间隔（快速推送，防退出丢失）
     lastPushTime: 0,
     pushTimer: null,
@@ -284,6 +285,7 @@ const Store = {
     const ts = Date.now();
     const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
+      { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId, api: true },
       { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
       { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
         headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } }
@@ -328,20 +330,31 @@ const Store = {
         // api 通道：Gist API 返回 gist 对象 { files: { 'data.json': {content}, 'files_blob_0': {content}, ... } }
         const gist = JSON.parse(await resp.text());
         const dataFile = gist.files && gist.files['data.json'];
-        if (!dataFile || !dataFile.content) return { success: true, hasData: false };
-        data = JSON.parse(dataFile.content);
+        if (!dataFile) throw new Error('Gist data.json missing; refusing to treat this as an empty cloud');
+        const readFile = async (file) => {
+          if (!file.truncated) return file.content || '';
+          const url = new URL(file.raw_url);
+          if (url.protocol !== 'https:' || url.hostname !== 'gist.githubusercontent.com') {
+            throw new Error('Unexpected Gist raw URL');
+          }
+          // Raw downloads must not receive the GitHub API credential.
+          const raw = await fetch(url.href, { signal: ctl.signal, cache: 'no-store' });
+          if (!raw.ok) throw new Error('Gist raw HTTP ' + raw.status);
+          return raw.text();
+        };
+        data = JSON.parse(await readFile(dataFile));
         // 合并 Gist 内部分片（files_blob_* 直接挂在 gist.files 上，分片格式云端时存在）
         const chunks = {};
-        Object.keys(gist.files).forEach(n => {
-          if (n === 'data.json') return;
+        for (const n of Object.keys(gist.files)) {
+          if (n === 'data.json') continue;
           if (n.indexOf('files_blob') === 0) {
             try {
-              const j = JSON.parse(gist.files[n].content || '{}');
+              const j = JSON.parse(await readFile(gist.files[n]));
               const map = (j && j.files && typeof j.files === 'object') ? j.files : j;
               if (map && typeof map === 'object') Object.assign(chunks, map);
-            } catch (e2) {}
+            } catch (e2) { throw new Error('Gist attachment download failed: ' + e2.message); }
           }
-        });
+        }
         if (!data._fileChunks) data._fileChunks = chunks;
         // 兜底：云端仍是旧 _blobShards 分片格式（分片不在 gist.files 内，需从镜像补）
         if (Array.isArray(data._blobShards) && data._blobShards.length && Object.keys(chunks).length === 0) {
@@ -467,25 +480,28 @@ const Store = {
 
   // ===== 云同步：推送数据到 Gist（仅 api.github.com 直连可写，带重试） =====
   async _pushOnce(body) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 20000);
-    try {
-      const resp = await fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
-        method: 'PATCH',
-        signal: ctl.signal,
-        headers: {
-          'Authorization': 'Bearer ' + this.CLOUD.token,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'banwei-workbench'
-        },
-        body: JSON.stringify(body)
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      return true;
-    } finally {
-      clearTimeout(timer);
+    const targets = [
+      { url: this.CLOUD.workerBase + this.CLOUD.gistId, headers: {} },
+      { url: this.CLOUD.apiBase + this.CLOUD.gistId,
+        headers: { Authorization: 'Bearer ' + this.CLOUD.token } }
+    ];
+    let lastError;
+    for (const target of targets) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20000);
+      try {
+        const resp = await fetch(target.url, {
+          method: 'PATCH', signal: ctl.signal,
+          headers: Object.assign({ 'Content-Type': 'application/json',
+            Accept: 'application/vnd.github.v3+json' }, target.headers),
+          body: JSON.stringify(body)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return true;
+      } catch (e) { lastError = e; }
+      finally { clearTimeout(timer); }
     }
+    throw lastError;
   },
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
@@ -594,13 +610,21 @@ const Store = {
         this.CLOUD.lastSyncTime = new Date().toISOString();
         // 2) 写 Pages 镜像（仓库）：手机等连不上 GitHub 的设备从此处读取“完整单文件数据”（含文件内容）。
         //    电脑/手机最终都读这一份，确保双端永远一致。
+        let mirrorOk = false;
         try {
           await this._pushRepoMirror(fullContent);
+          mirrorOk = true;
           this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
           this.CLOUD._canReachCloud = true;
-        } catch (e) { console.warn('镜像提交失败(忽略):', e); }
+        } catch (e) { console.warn('镜像提交失败，保留待同步状态:', e); }
+        if (!gistOk || !mirrorOk) {
+          throw new Error(!gistOk && !mirrorOk ? '所有上传通道失败' : '部分同步通道失败，稍后重试');
+        }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
-        if (this.CLOUD.pendingPush && rounds < 6) continue;
+        if (this.CLOUD.pendingPush) {
+          if (rounds < 6) continue;
+          throw new Error('仍有新改动待上传，保留重试队列');
+        }
         this.CLOUD.isSyncing = false;
         this.CLOUD.pushInFlight = false;
         this.CLOUD.syncStatus = 'idle';
@@ -624,31 +648,9 @@ const Store = {
   // 跳过冲突检测（dirty 本地优先），直接把本地全量数据 PATCH 到云端
   async flushBeforeHide() {
     if (!this.CLOUD.enabled || !this.CLOUD.dirty) return;
-    if (this.CLOUD.isSyncing || this.CLOUD.pushInFlight) return;
-    // 未完成首次云端数据合并前不直推（防止全新设备把不完整数据在关闭瞬间推上云端）
-    if (!this.CLOUD.cloudMerged) return;
-    try {
-      // 先刷新内容缓存，确保本机文件内容都带上云
-      try { await this._refreshContentCache(); } catch (e) {}
-      const allData = this._safeCollectAllData();
-      allData.data.lastModified = new Date().toISOString();
-      this._setLocalModified(allData.data.lastModified);
-      const body = JSON.stringify({ files: { 'data.json': { content: JSON.stringify(allData.data, null, 2) } } });
-      // keepalive：页面关闭/切后台后请求仍会继续完成
-      fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
-        method: 'PATCH',
-        keepalive: true,
-        headers: {
-          'Authorization': 'Bearer ' + this.CLOUD.token,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'banwei-workbench'
-        },
-        body: body
-      }).then(r => {
-        if (r.ok) { this._clearDirty(); this.CLOUD.syncStatus = 'idle'; this._updateIndicator(); }
-      }).catch(() => {});
-    } catch (e) {}
+    // Keep the persisted retry marker. The normal queue handles merge and mirror writes.
+    // A direct unload PATCH could overwrite another device and clear dirty before the mirror exists.
+    return this.pushToCloud();
   },
 
   // ===== 数据镜像：把云端数据同步提交到仓库 sync/ 目录，经 GitHub Pages 发布 =====
@@ -666,7 +668,10 @@ const Store = {
       'Content-Type': 'application/json',
       'User-Agent': 'banwei-workbench'
     };
-    const J = (r) => r.json();
+    const J = async (r) => {
+      if (!r.ok) throw new Error('GitHub mirror HTTP ' + r.status);
+      return r.json();
+    };
     const ref = await J(await fetch(apiBase + 'refs/heads/' + branch, { headers: H, cache: 'no-store' }));
     if (!ref || !ref.object) throw new Error('ref err');
     const parent = ref.object.sha;
@@ -689,7 +694,7 @@ const Store = {
     }
     const tree = await J(await fetch(apiBase + 'trees', { method: 'POST', headers: H, body: JSON.stringify({ base_tree: baseTree, tree: entries }) }));
     const nc = await J(await fetch(apiBase + 'commits', { method: 'POST', headers: H, body: JSON.stringify({ message: 'sync: data mirror', tree: tree.sha, parents: [parent] }) }));
-    await fetch(apiBase + 'refs/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) });
+    await J(await fetch(apiBase + 'refs/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) }));
     this.CLOUD._lastMirrorAt = new Date().toISOString();
     this.CLOUD._canReachCloud = true;
     console.log('[sync] Pages 镜像已更新:', nc.sha);
