@@ -590,9 +590,7 @@ const Store = {
           if (!persisted || this.CLOUD._filePersistFailed) throw new Error('文件内容尚未可靠保存，拒绝标记同步成功');
         }
         try { await this._refreshContentCache(); } catch (e) {}
-        const filesNeedingHydration = this.getFiles().filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
-        for (const file of filesNeedingHydration) await this.loadFileContent(file.id);
-        const expectedFiles = this.getFiles();
+        const expectedFiles = await this._hydrateFilesForPush(this.getFiles());
         const allData = this._safeCollectAllData();
         if (!this._validateCloudFilePayload(allData.data, expectedFiles)) throw new Error('本机文件内容不完整，拒绝上传');
         allData.data.lastModified = new Date().toISOString();
@@ -1363,6 +1361,32 @@ const Store = {
     const metas = this.getFiles().map(item => item && item.id === fileId ? Object.assign({}, item, { content: payload.content, hasContent: true, cloudLimited: false }) : item);
     this._writeFilesWithContent(metas);
     return Object.assign({}, file, { content: payload.content, hasContent: true, cloudLimited: false });
+  },
+
+  async _hydrateFilesForPush(files) {
+    const missing = (files || []).filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
+    if (!missing.length) return files;
+    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId, { headers: { Authorization: 'Bearer ' + this.CLOUD.token }, cache: 'no-store' });
+    if (!resp.ok) throw new Error('云端文件批量读取失败');
+    const gist = await resp.json();
+    const dataFile = gist && gist.files && gist.files['data.json'];
+    if (!dataFile || typeof dataFile.content !== 'string') throw new Error('云端文件快照为空');
+    const cloud = JSON.parse(dataFile.content);
+    const chunks = cloud._fileChunks || {};
+    const byId = new Map((cloud._files || []).map(file => [file.id, file]));
+    const hydrated = (files || []).map(file => {
+      if (!file || !(file.hasContent && !(typeof file.content === 'string' && file.content.length))) return file;
+      const remote = byId.get(file.id);
+      if (!remote || remote.cloudLimited) return file;
+      let content = typeof remote.content === 'string' ? remote.content : '';
+      if (!content && remote.contentChunkCount) {
+        for (let i = 0; i < remote.contentChunkCount; i++) content += chunks[remote.id + '|' + i] || '';
+      }
+      if (!content || (remote.contentLength && content.length !== remote.contentLength)) throw new Error('云端文件内容不完整: ' + (file.name || file.id));
+      return Object.assign({}, file, { content, hasContent: true, cloudLimited: false });
+    });
+    this._writeFilesWithContent(hydrated);
+    return this.getFiles();
   },
 
   addFile(fileInfo) {
