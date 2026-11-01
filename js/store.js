@@ -285,7 +285,8 @@ const Store = {
     const ts = Date.now();
     const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
-      { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId, api: true },
+      { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId, api: true,
+        headers: { Authorization: 'Bearer ' + this.CLOUD.token } },
       { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
       { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
         headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } }
@@ -481,7 +482,7 @@ const Store = {
   // ===== 云同步：推送数据到 Gist（仅 api.github.com 直连可写，带重试） =====
   async _pushOnce(body) {
     const targets = [
-      { url: this.CLOUD.workerBase + this.CLOUD.gistId, headers: {} },
+      { url: this.CLOUD.workerBase + this.CLOUD.gistId, headers: { Authorization: 'Bearer ' + this.CLOUD.token } },
       { url: this.CLOUD.apiBase + this.CLOUD.gistId,
         headers: { Authorization: 'Bearer ' + this.CLOUD.token } }
     ];
