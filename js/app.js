@@ -1321,8 +1321,10 @@ const App = {
     const data = await Exporter.recognizeScheduleImage(file);
     if (data && Object.keys(data).length > 0) {
       this.showScheduleImportConfirm(data);
+      return data;
     } else {
       this.toast('未从图片中识别出课程，请确认图片是清晰的课表截图', 'warning');
+      return null;
     }
   },
 

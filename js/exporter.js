@@ -1661,6 +1661,10 @@ const Exporter = {
           content: result.originalFileBase64,
           size: file.size
         });
+        if (!savedFile) {
+          App.toast('原始 Word 文件保存失败，导入已取消', 'error');
+          return false;
+        }
         savedFileId = savedFile.id;
       }
 
