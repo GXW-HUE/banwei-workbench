@@ -1591,7 +1591,7 @@ const Exporter = {
 
   importBackup(file) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const data = JSON.parse(e.target.result);
         if (Store.importAll(data)) {
@@ -1672,7 +1672,7 @@ const Exporter = {
     }
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const base64 = e.target.result.split(',')[1];
         const mimeType = e.target.result.split(',')[0].split(':')[1].split(';')[0];
@@ -1682,7 +1682,7 @@ const Exporter = {
           const clean = String(label).replace(/[\\/:*?"<>|]/g, '').trim();
           if (clean) saveName = '【' + clean + '】' + saveName;
         }
-        Store.addFile({
+        const saved = Store.addFile({
           name: saveName,
           module: moduleId,
           moduleTitle: config.title,
@@ -1695,7 +1695,23 @@ const Exporter = {
           content: base64,
           size: file.size
         });
-        App.toast(`${fmt.label} 文件已保存${label ? '（' + label + '）' : ''}`, 'success');
+        if (!saved || !Store.getFiles().some(f => f && f.id === saved.id)) {
+          App.toast(`${fmt.label} 文件保存失败，请重试`, 'error');
+          return;
+        }
+        App.toast(`${fmt.label} 文件已保存，正在同步…`, 'info');
+        // 考勤文件必须确认已经推到云端，避免本机保存成功但网络推送失败时
+        // 仍显示“已完成”。失败会保留 dirty 状态并自动重试。
+        try {
+          const sync = await Store.syncNow();
+          if (sync && sync.push && sync.push.success) {
+            App.toast(`${fmt.label} 已同步到云端，其他设备可见`, 'success');
+          } else {
+            App.toast(`${fmt.label} 已保存在本机，云端同步失败，将自动重试`, 'warning');
+          }
+        } catch (syncErr) {
+          App.toast(`${fmt.label} 已保存在本机，云端同步失败，将自动重试`, 'warning');
+        }
         if (App.currentModule) App.renderModule(App.currentModule);
       } catch (err) {
         App.toast('文件保存失败', 'error');

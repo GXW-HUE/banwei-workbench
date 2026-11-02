@@ -209,7 +209,10 @@ const App = {
             }
           });
         } else if (fail === 0 && ok === 1) {
-          this.toast('导入成功', 'success');
+          // 文件型模块由 FileReader 异步保存，保存结果和同步结果由
+          // Exporter.importAsAttachment 统一提示，避免这里提前显示“成功”。
+          const cfg = MODULE_CONFIG[moduleId];
+          if (!cfg || cfg.type !== 'file') this.toast('导入成功', 'success');
         }
       }
       e.target.value = '';
@@ -1541,7 +1544,7 @@ const App = {
     // 文件夹模式
     if (!this.currentFolder) {
       // 根目录：显示所有模块文件夹
-      const moduleOrder = ['students', 'schedule', 'duty', 'weekly', 'monthly', 'talk', 'friendship', 'meeting', 'activity', 'leaders', 'all', 'other'];
+      const moduleOrder = ['students', 'schedule', 'duty', 'weekly', 'monthly', 'talk', 'friendship', 'meeting', 'activity', 'weekend', 'leave', 'absence', 'leaders', 'all', 'other'];
       const sortedKeys = Object.keys(groups).sort((a, b) => {
         const ia = moduleOrder.indexOf(a), ib = moduleOrder.indexOf(b);
         return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
