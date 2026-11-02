@@ -1014,10 +1014,12 @@ const Exporter = {
 
   importExcel(moduleId, file, label) {
     const config = MODULE_CONFIG[moduleId];
-    if (!config) return;
+    if (!config) return Promise.resolve(false);
 
+    return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (e) => {
+      let imported = false;
       try {
         const ext = file.name.split('.').pop().toLowerCase();
         let wb;
@@ -1034,15 +1036,16 @@ const Exporter = {
 
         if (config.type === 'schedule') {
           this.importScheduleFromSheet(ws, moduleId);
+          imported = true;
         } else if (moduleId === 'weekend') {
           // 去向登记表：双栏并排、表头在第3行，专用解析
-          this.importWeekendFromSheet(ws, moduleId, label);
+          imported = this.importWeekendFromSheet(ws, moduleId, label);
         } else if (moduleId === 'leave') {
           // 请假统计表：标准单栏表，专用解析
-          this.importLeaveFromSheet(ws, moduleId, label);
+          imported = this.importLeaveFromSheet(ws, moduleId, label);
         } else if (moduleId === 'absence') {
           // 缺勤统计表：标准单栏表，专用解析
-          this.importAbsenceFromSheet(ws, moduleId, label);
+          imported = this.importAbsenceFromSheet(ws, moduleId, label);
         } else {
           // 预处理 row：去除 key 的 BOM、空格，建立规范化映射
           const normalizeKey = (k) => String(k || '').replace(/^\uFEFF/, '').trim();
@@ -1084,16 +1087,25 @@ const Exporter = {
             });
           });
           const skipped = records.length - validRecords.length;
-          Store.save(moduleId, validRecords);
+          if (!validRecords.length) {
+            App.toast('未识别到有效记录，原有数据未更改', 'warning');
+            return;
+          }
+          const existing = Store.get(moduleId) || [];
+          imported = Store.save(moduleId, existing.concat(validRecords));
           App.renderTable(moduleId);
-          App.toast(`📥 成功导入 ${validRecords.length} 条记录${skipped > 0 ? '（已自动跳过 ' + skipped + ' 条空行）' : ''}`, 'success');
+          if (imported) App.toast(`📥 成功导入 ${validRecords.length} 条记录${skipped > 0 ? '（已自动跳过 ' + skipped + ' 条空行）' : ''}`, 'success');
         }
       } catch (err) {
         console.error('导入失败:', err);
         App.toast('导入失败，请检查文件格式', 'error');
+      } finally {
+        resolve(imported);
       }
     };
+    reader.onerror = () => { App.toast('文件读取失败，请重新选择文件', 'error'); resolve(false); };
     reader.readAsArrayBuffer(file);
+    });
   },
 
   // ===== 周末去向登记表专用解析（双栏并排，表头在第3行） =====
@@ -1139,17 +1151,18 @@ const Exporter = {
 
     if (records.length === 0) {
       App.toast('未识别到去向登记数据，请确认文件为机电一体化2503班去向登记表', 'error');
-      return;
+      return false;
     }
-    Store.save(moduleId, records);
+    const saved = Store.save(moduleId, (Store.get(moduleId) || []).concat(records));
     App.renderTable(moduleId);
-    App.toast(`📥 成功导入 ${records.length} 条去向登记记录`, 'success');
+    if (saved) App.toast(`📥 成功导入 ${records.length} 条去向登记记录`, 'success');
+    return !!saved;
   },
 
   // ===== 学生请假统计表专用解析（单栏，表头在第1行） =====
   importLeaveFromSheet(ws, moduleId, label) {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    if (aoa.length < 2) { App.toast('请假表数据为空', 'error'); return; }
+    if (aoa.length < 2) { App.toast('请假表数据为空', 'error'); return false; }
 
     // 字段映射：Excel表头 -> 记录字段
     const fieldMap = {
@@ -1182,16 +1195,17 @@ const Exporter = {
       if (rec.name || rec.studentId) records.push(rec);
     }
 
-    if (records.length === 0) { App.toast('未识别到请假数据', 'error'); return; }
-    Store.save(moduleId, records);
+    if (records.length === 0) { App.toast('未识别到请假数据，原有数据未更改', 'error'); return false; }
+    const saved = Store.save(moduleId, (Store.get(moduleId) || []).concat(records));
     App.renderTable(moduleId);
-    App.toast(`📥 成功导入 ${records.length} 条请假记录`, 'success');
+    if (saved) App.toast(`📥 成功导入 ${records.length} 条请假记录`, 'success');
+    return !!saved;
   },
 
   // ===== 学生缺勤统计表专用解析（单栏，表头在第1行） =====
   importAbsenceFromSheet(ws, moduleId, label) {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    if (aoa.length < 2) { App.toast('缺勤表数据为空', 'error'); return; }
+    if (aoa.length < 2) { App.toast('缺勤表数据为空', 'error'); return false; }
 
     const fieldMap = {
       '学号': 'studentId', '姓名': 'name', '开课学年度': 'schoolYear', '开课学期码': 'semester',
@@ -1220,10 +1234,11 @@ const Exporter = {
       if (rec.name || rec.studentId) records.push(rec);
     }
 
-    if (records.length === 0) { App.toast('未识别到缺勤数据', 'error'); return; }
-    Store.save(moduleId, records);
+    if (records.length === 0) { App.toast('未识别到缺勤数据，原有数据未更改', 'error'); return false; }
+    const saved = Store.save(moduleId, (Store.get(moduleId) || []).concat(records));
     App.renderTable(moduleId);
-    App.toast(`📥 成功导入 ${records.length} 条缺勤记录`, 'success');
+    if (saved) App.toast(`📥 成功导入 ${records.length} 条缺勤记录`, 'success');
+    return !!saved;
   },
 
   importScheduleFromSheet(ws, moduleId) {
@@ -1590,6 +1605,7 @@ const Exporter = {
   },
 
   importBackup(file) {
+    return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
@@ -1597,20 +1613,25 @@ const Exporter = {
         if (Store.importAll(data)) {
           App.toast('💾 数据恢复成功', 'success');
           App.renderModule(App.currentModule);
+          resolve(true);
         } else {
           App.toast('数据格式错误', 'error');
+          resolve(false);
         }
       } catch (err) {
         App.toast('文件解析失败', 'error');
+        resolve(false);
       }
     };
+    reader.onerror = () => { App.toast('文件读取失败', 'error'); resolve(false); };
     reader.readAsText(file);
+    });
   },
 
   // 导入 Word（docx）文件：用 mammoth 解析内容，自动创建记录并保存原文件附件
   async importWord(moduleId, file) {
     const config = MODULE_CONFIG[moduleId];
-    if (!config) return;
+    if (!config) return false;
 
     try {
       App.toast('正在解析 Word 文件...', 'info');
@@ -1621,7 +1642,7 @@ const Exporter = {
 
       if (records.length === 0) {
         App.toast('未从文件中识别到有效内容', 'warning');
-        return;
+        return false;
       }
 
       // 给每条记录补 id，并关联原始文件（用于眼睛在线预览 + 导出原文件）
@@ -1650,13 +1671,15 @@ const Exporter = {
 
       // 追加保存到模块（不覆盖已有数据）
       const existing = Store.get(moduleId) || [];
-      Store.save(moduleId, [...existing, ...records]);
+      if (!Store.save(moduleId, [...existing, ...records])) return false;
 
       App.renderTable(moduleId);
       App.toast(`📥 成功导入 ${records.length} 条记录`, 'success');
+      return true;
     } catch (err) {
       console.error('Word 导入失败:', err);
       App.toast('Word 文件解析失败：' + (err.message || '未知错误'), 'error');
+      return false;
     }
   },
 
@@ -1664,15 +1687,17 @@ const Exporter = {
   importAsAttachment(moduleId, file, format, label) {
     const config = MODULE_CONFIG[moduleId];
     const fmt = FILE_FORMATS.find(f => f.id === format);
-    if (!config || !fmt) return;
+    if (!config || !fmt) return Promise.resolve(false);
 
     // 不限制文件大小（用户要求），仅提示大文件处理较慢
     if (file.size > 20 * 1024 * 1024) {
       App.toast('文件较大（' + (file.size/1024/1024).toFixed(1) + 'MB），正在保存，请稍候...', 'warning');
     }
 
+    return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
+      let savedOk = false;
       try {
         const base64 = e.target.result.split(',')[1];
         const mimeType = e.target.result.split(',')[0].split(':')[1].split(';')[0];
@@ -1695,29 +1720,34 @@ const Exporter = {
           content: base64,
           size: file.size
         });
-        if (!saved || !Store.getFiles().some(f => f && f.id === saved.id)) {
+        if (!saved) {
           App.toast(`${fmt.label} 文件保存失败，请重试`, 'error');
+          resolve(false);
           return;
         }
-        App.toast(`${fmt.label} 文件已保存，正在同步…`, 'info');
-        // 考勤文件必须确认已经推到云端，避免本机保存成功但网络推送失败时
-        // 仍显示“已完成”。失败会保留 dirty 状态并自动重试。
-        try {
-          const sync = await Store.syncNow();
-          if (sync && sync.push && sync.push.success) {
-            App.toast(`${fmt.label} 已同步到云端，其他设备可见`, 'success');
-          } else {
-            App.toast(`${fmt.label} 已保存在本机，云端同步失败，将自动重试`, 'warning');
-          }
-        } catch (syncErr) {
-          App.toast(`${fmt.label} 已保存在本机，云端同步失败，将自动重试`, 'warning');
+        if (!Store.CLOUD._idbOk && !Store.getFiles().some(f => f && f.id === saved.id && typeof f.content === 'string' && f.content.length)) {
+          Store.deleteFile(saved.id);
+          App.toast(`${fmt.label} 文件未能写入本机存储，请清理空间后重试`, 'error');
+          resolve(false);
+          return;
         }
+        if (!Store.getFiles().some(f => f && f.id === saved.id)) {
+          App.toast(`${fmt.label} 文件保存失败，请重试`, 'error');
+          resolve(false);
+          return;
+        }
+        savedOk = true;
+        App.toast(`${fmt.label} 文件已保存`, 'success');
         if (App.currentModule) App.renderModule(App.currentModule);
       } catch (err) {
         App.toast('文件保存失败', 'error');
+      } finally {
+        resolve(savedOk);
       }
     };
+    reader.onerror = () => { App.toast('文件读取失败，请重新选择文件', 'error'); resolve(false); };
     reader.readAsDataURL(file);
+    });
   },
 
   // ============================

@@ -181,38 +181,35 @@ const App = {
     });
 
     // 文件导入（根据扩展名自动判断格式，支持一次选择多个文件批量上传）
-    document.getElementById('file-input').addEventListener('change', (e) => {
+    document.getElementById('file-input').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files || []);
       const moduleId = this.importTargetModule;
       if (files.length && moduleId) {
         let ok = 0, fail = 0;
         const total = files.length;
-        files.forEach((file, i) => {
+        for (const file of files) {
           try {
             this.importTargetModule = moduleId;
-            this.handleImportFile(file);
-            ok++;
+            if (await this.handleImportFile(file)) ok++;
+            else fail++;
           } catch (err) {
             fail++;
             console.error('导入失败:', file.name, err);
           }
-        });
+        }
         this.importTargetModule = null;
-        if (total > 1) {
-          this.toast(`批量导入完成：成功 ${ok} 个${fail ? '，失败 ' + fail + ' 个' : ''}`, fail ? 'warning' : 'success');
-          // 批量上传后立即同步云端，避免退出后记录丢失
+        if (ok > 0) {
+          // 必须等 FileReader/IndexedDB 本地保存完成后再推送，否则批量上传时
+          // 同步请求可能先于文件落盘，造成“提示成功但云端少文件”。
           Store.syncNow().then(res => {
             if (res.push && res.push.success) {
-              this.toast('已同步到云端，所有设备可见', 'success');
-            } else if (res.push && res.push.reason === 'pull_failed') {
-              this.toast('云端暂时连不上，数据已保存在本机，联网后会自动同步', 'warning');
+              this.toast(`导入完成：成功 ${ok}/${total} 个，已同步到云端`, fail ? 'warning' : 'success');
+            } else {
+              this.toast(`导入完成：成功 ${ok}/${total} 个；云端同步失败，数据已保存在本机并将自动重试`, 'warning');
             }
-          });
-        } else if (fail === 0 && ok === 1) {
-          // 文件型模块由 FileReader 异步保存，保存结果和同步结果由
-          // Exporter.importAsAttachment 统一提示，避免这里提前显示“成功”。
-          const cfg = MODULE_CONFIG[moduleId];
-          if (!cfg || cfg.type !== 'file') this.toast('导入成功', 'success');
+          }).catch(() => this.toast(`导入完成：成功 ${ok}/${total} 个；云端同步失败，稍后自动重试`, 'warning'));
+        } else if (total > 0) {
+          this.toast(`导入失败：所选 ${total} 个文件均未成功导入`, 'error');
         }
       }
       e.target.value = '';
@@ -1073,10 +1070,10 @@ const App = {
     }
 
     if (this.editingId) {
-      Store.update(moduleId, this.editingId, record);
+      if (!Store.update(moduleId, this.editingId, record)) return;
       this.toast('记录已更新', 'success');
     } else {
-      Store.add(moduleId, record);
+      if (!Store.add(moduleId, record)) return;
       this.toast('记录已添加', 'success');
     }
 
@@ -1268,7 +1265,7 @@ const App = {
   },
 
   // 根据文件扩展名自动处理导入
-  handleImportFile(file) {
+  async handleImportFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
     const moduleId = this.importTargetModule;
 
@@ -1276,9 +1273,9 @@ const App = {
     if (MODULE_CONFIG[moduleId] && MODULE_CONFIG[moduleId].type === 'file') {
       const fmtMap = {xlsx:'excel', xls:'excel', csv:'excel', doc:'word', docx:'word', pdf:'pdf', ppt:'ppt', pptx:'ppt'};
       const fmt = fmtMap[ext] || 'excel';
-      Exporter.importAsAttachment(moduleId, file, fmt, this.importLabelValue);
+      const saved = await Exporter.importAsAttachment(moduleId, file, fmt, this.importLabelValue);
       this.importLabelValue = null;
-      return;
+      return !!saved;
     }
 
     // 大文件友好提示（不阻止导入，但提醒用户可能存储较慢或失败）
@@ -1288,33 +1285,35 @@ const App = {
     }
 
     if (moduleId === '_backup' || ext === 'json') {
-      Exporter.importBackup(file);
-      return;
+      return await Exporter.importBackup(file);
     }
 
     if (['xlsx', 'xls', 'csv'].includes(ext)) {
-      Exporter.importExcel(moduleId, file, this.importLabelValue);
+      const imported = await Exporter.importExcel(moduleId, file, this.importLabelValue);
       this.importLabelValue = null;
+      return !!imported;
     } else if (['doc', 'docx'].includes(ext)) {
       const supportedWordModules = ['weekly', 'monthly', 'meeting', 'activity', 'talk', 'friendship'];
       if (ext === 'docx' && supportedWordModules.includes(moduleId)) {
-        Exporter.importWord(moduleId, file);
+        return await Exporter.importWord(moduleId, file);
       } else {
-        Exporter.importAsAttachment(moduleId, file, 'word');
+        return !!(await Exporter.importAsAttachment(moduleId, file, 'word'));
       }
     } else if (ext === 'pdf') {
-      Exporter.importAsAttachment(moduleId, file, 'pdf');
+      return !!(await Exporter.importAsAttachment(moduleId, file, 'pdf'));
     } else if (['ppt', 'pptx'].includes(ext)) {
-      Exporter.importAsAttachment(moduleId, file, 'ppt');
+      return !!(await Exporter.importAsAttachment(moduleId, file, 'ppt'));
     } else if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) {
       if (moduleId === 'schedule') {
-        this.importScheduleImage(file);
+        const result = await this.importScheduleImage(file);
+        return !!(result && Object.keys(result).length);
       } else {
         this.toast('图片仅支持导入到"课表安排"模块', 'warning');
       }
     } else {
       this.toast('不支持的文件格式，请上传 Excel / 图片 / Word / PDF / PPT 文件', 'warning');
     }
+    return false;
   },
 
   // ===== 课表图片识别导入（OCR） =====

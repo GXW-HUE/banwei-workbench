@@ -1244,19 +1244,19 @@ const Store = {
     // 类型防御：模块数据必须是数组，拒绝把单条对象等错误结构写入
     if (!Array.isArray(data)) {
       console.error('Store.save 拒绝写入非数组数据:', moduleId, typeof data);
-      return;
+      return false;
     }
     try {
       localStorage.setItem(this.getKey(moduleId), JSON.stringify(data));
     } catch (e) {
       console.error('本地存储写入失败（可能存储空间已满）:', e);
-      if (typeof App !== 'undefined' && App.toast) {
-        App.toast('本地存储空间不足，部分数据可能未保存，请清理文件中心的大文件', 'error');
-      }
+      if (typeof App !== 'undefined' && App.toast) App.toast('本地存储空间不足，数据没有保存，请清理文件中心的大文件后重试', 'error');
+      return false;
     }
     // 记录本地修改时间，用于与云端冲突对比（防止本地新数据被云端旧数据覆盖而丢失）
     this._setLocalModified(new Date().toISOString());
     this.schedulePush();
+    return true;
   },
 
   add(moduleId, record) {
@@ -1266,8 +1266,7 @@ const Store = {
     record.createdAt = record.createdAt || nowIso;
     record.updatedAt = nowIso;
     data.push(record);
-    this.save(moduleId, data);
-    return record;
+    return this.save(moduleId, data) ? record : null;
   },
 
   update(moduleId, id, updates) {
@@ -1275,8 +1274,7 @@ const Store = {
     const index = data.findIndex(r => r.id === id);
     if (index !== -1) {
       data[index] = { ...data[index], ...updates, id: id, updatedAt: new Date().toISOString() };
-      this.save(moduleId, data);
-      return data[index];
+      return this.save(moduleId, data) ? data[index] : null;
     }
     return null;
   },
@@ -1284,8 +1282,9 @@ const Store = {
   delete(moduleId, id) {
     const data = this.get(moduleId);
     const filtered = data.filter(r => r.id !== id);
-    this.save(moduleId, filtered);
+    if (filtered.length !== data.length && !this.save(moduleId, filtered)) return false;
     this._addTomb(moduleId, id);   // 记录删除墓碑，随同步通知其他设备删除
+    return true;
   },
 
   // ===== 课表特殊处理 =====
@@ -1547,17 +1546,26 @@ const Store = {
   // ===== 导入全部数据（恢复） =====
   importAll(data) {
     if (!data || typeof data !== 'object') return false;
-    Object.keys(MODULE_CONFIG).forEach(moduleId => {
-      if (data[moduleId]) {
+    // 先完整验证备份结构再开始覆盖，避免坏 JSON/错误字段造成只恢复一半的数据。
+    for (const moduleId of Object.keys(MODULE_CONFIG)) {
+      if (!Object.prototype.hasOwnProperty.call(data, moduleId)) continue;
+      const value = data[moduleId];
+      if (MODULE_CONFIG[moduleId].type === 'schedule') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      } else if (!Array.isArray(value)) return false;
+    }
+    if (data._files !== undefined && !Array.isArray(data._files)) return false;
+    for (const moduleId of Object.keys(MODULE_CONFIG)) {
+      if (Object.prototype.hasOwnProperty.call(data, moduleId)) {
         if (MODULE_CONFIG[moduleId].type === 'schedule') {
           this.saveSchedule(data[moduleId]);
         } else {
-          this.save(moduleId, data[moduleId]);
+          if (!this.save(moduleId, data[moduleId])) return false;
         }
       }
-    });
+    }
     if (data._files) {
-      this._writeFilesWithContent(data._files);
+      if (!this._writeFilesWithContent(data._files)) return false;
       this.schedulePush();
     }
     return true;
