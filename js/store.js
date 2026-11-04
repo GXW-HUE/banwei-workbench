@@ -232,7 +232,11 @@ const Store = {
       }).catch(() => false);
       this._lastFilePersist = persist;
       persist.then(ok => {
-        if (!ok) {
+        if (ok) {
+          // 一次性的 IndexedDB 写入失败不能把后续所有上传永久锁死。
+          // 成功重试后清除错误标记，下一次推送即可恢复云端同步。
+          this.CLOUD._filePersistFailed = false;
+        } else {
           this.CLOUD._filePersistFailed = true;
           this.CLOUD.syncStatus = 'error';
           this._updateIndicator();
@@ -623,8 +627,11 @@ const Store = {
           this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
           this.CLOUD._canReachCloud = true;
         } catch (e) { console.warn('镜像提交失败，保留待同步状态:', e); }
-        if (!gistOk || !mirrorOk) {
-          throw new Error(!gistOk && !mirrorOk ? '所有上传通道失败' : '部分同步通道失败，稍后重试');
+        // Gist/Worker 是主同步通道，Pages 只是手机端的备用镜像。
+        // 主通道成功即可确认数据已到云端；镜像失败留给后台轮询补推，
+        // 避免因 GitHub Pages 提交短暂冲突把已经成功的上传误报为失败。
+        if (!gistOk && !mirrorOk) {
+          throw new Error('所有上传通道失败');
         }
         // 推送进行中又收到新改动 → 用最新全量数据再推一轮（最多 6 轮兜底，极端情况下次轮询补齐）
         if (this.CLOUD.pendingPush) {
