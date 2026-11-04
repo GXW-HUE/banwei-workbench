@@ -1140,7 +1140,10 @@ const Store = {
   async syncNow() {
     const pullResult = await this.fetchFromCloud();
     if (pullResult.success && pullResult.hasData && pullResult.data) {
-      this._mergeCloudData(pullResult.data);
+      // 手动同步由此函数统一发起推送；静默合并可避免 _mergeCloudData
+      // 因发现本机独有数据而异步启动另一轮推送，导致下方 pushToCloud 立即撞上
+      // pushInFlight 锁并把“上传正在进行”误报为失败。
+      this._mergeCloudData(pullResult.data, true);
     }
     // 推送本地数据到云端（确保云端最新；拉取失败时 pushToCloud 会拒绝推送防覆盖）
     const pushResult = await this.pushToCloud();
