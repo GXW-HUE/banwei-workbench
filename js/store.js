@@ -22,6 +22,7 @@ const Store = {
     lastPushTime: 0,
     pushTimer: null,
     isSyncing: false,
+    pushPromise: null,     // 并发触发的同步复用同一轮结果，不把 busy 误报成上传失败
     pushInFlight: false,   // 推送全局锁（覆盖冲突检测窗口，防并发推送互相覆盖）
     pullPromise: null,     // 拉取单例（pulling 期间复用，防并发拉取）
     lastSyncTime: null,
@@ -538,7 +539,16 @@ const Store = {
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
 
-  async pushToCloud() {
+  pushToCloud() {
+    if (this.CLOUD.pushPromise) return this.CLOUD.pushPromise;
+    const operation = this._pushToCloudImpl();
+    this.CLOUD.pushPromise = operation;
+    const clear = () => { if (this.CLOUD.pushPromise === operation) this.CLOUD.pushPromise = null; };
+    operation.then(clear, clear);
+    return operation;
+  },
+
+  async _pushToCloudImpl() {
     if (!this.CLOUD.enabled) return { success: false };
     // 全局推送锁：冲突检测（含一次拉取 await）期间也加锁，杜绝多个推送并发 PATCH 互相覆盖
     if (this.CLOUD.pushInFlight || this.CLOUD.isSyncing) return { success: false, reason: 'busy' };
