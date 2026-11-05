@@ -1,13 +1,14 @@
 const ORIGIN = 'https://gxw-hue.github.io';
 const GIST = '1a9cbefeb7b98260e552c057924d67ae';
-const UPSTREAM = 'https://banwei-workbench-sync.3596098158.workers.dev';
 const LIMIT = 20 * 1024 * 1024;
 const cors = { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Methods': 'GET, PATCH, OPTIONS', 'Access-Control-Allow-Headers': 'Accept, Authorization, Content-Type', 'Cache-Control': 'no-store', 'Vary': 'Origin' };
-export async function onRequest({request, params}) {
+export async function onRequest({request, params, env}) {
   if (request.headers.get('Origin') !== ORIGIN) return new Response('Forbidden', {status:403});
   if (params.id !== GIST) return new Response('Not found', {status:404,headers:cors});
   if (request.method === 'OPTIONS') return new Response(null,{status:204,headers:cors});
   if (!['GET','PATCH'].includes(request.method)) return new Response('Method not allowed',{status:405,headers:cors});
+  const token = env && env.GIST_TOKEN;
+  if (!token) return new Response(JSON.stringify({error:'Cloud sync credentials are not configured'}),{status:503,headers:{...cors,'Content-Type':'application/json'}});
   const ctl = new AbortController();
   const timer = setTimeout(()=>ctl.abort(),90000);
   try {
@@ -17,10 +18,9 @@ export async function onRequest({request, params}) {
       body = await request.text();
       if (new TextEncoder().encode(body).length > LIMIT) return new Response('Too large',{status:413,headers:cors});
     }
-    const authorization = request.headers.get('Authorization');
-    const upstream = await fetch(authorization ? 'https://api.github.com/gists/' + GIST : UPSTREAM + '/gists/' + GIST, {
+    const upstream = await fetch('https://api.github.com/gists/' + GIST, {
       method:request.method, signal:ctl.signal,
-      headers: authorization ? {Authorization:authorization,Accept:'application/vnd.github+json','Content-Type':'application/json','User-Agent':'banwei-workbench-sync'} : {Origin:ORIGIN,Accept:'application/json','Content-Type':'application/json'}, body
+      headers: {Authorization:'Bearer '+token,Accept:'application/vnd.github+json','Content-Type':'application/json','User-Agent':'banwei-workbench-sync'}, body
     });
     if (!upstream.ok || request.method !== 'GET') return new Response(upstream.body,{status:upstream.status,headers:{...cors,'Content-Type':'application/json'}});
     const gist = await upstream.json();

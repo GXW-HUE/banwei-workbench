@@ -15,9 +15,9 @@ const Store = {
     enabled: true,
     gistId: '1a9cbefeb7b98260e552c057924d67ae',
     owner: 'GXW-HUE',
-    token: 'ghp_' + 'gJY33bsG' + 'hCzC4S4Bl' + 'KHkMdpQHo' + 'Jh742s7Gf5',
     apiBase: 'https://api.github.com/gists/',
     workerBase: 'https://banwei-sync-api.pages.dev/gists/',
+    mirrorBase: 'https://banwei-sync-api.pages.dev/mirror',
     debounceMs: 800,       // 修改后防抖推送间隔（快速推送，防退出丢失）
     lastPushTime: 0,
     pushTimer: null,
@@ -293,10 +293,10 @@ const Store = {
     const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
       { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId + '?meta=1', api: true,
-        headers: { Authorization: 'Bearer ' + this.CLOUD.token } },
+        headers: {} },
       { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
       { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
-        headers: { 'Authorization': 'Bearer ' + this.CLOUD.token, 'Accept': 'application/vnd.github.v3+json' } }
+        headers: { 'Accept': 'application/vnd.github.v3+json' } }
     ];
   },
 
@@ -510,9 +510,8 @@ const Store = {
   // ===== 云同步：推送数据到 Gist（仅 api.github.com 直连可写，带重试） =====
   async _pushOnce(body) {
     const targets = [
-      { url: this.CLOUD.workerBase + this.CLOUD.gistId, headers: { Authorization: 'Bearer ' + this.CLOUD.token } },
-      { url: this.CLOUD.apiBase + this.CLOUD.gistId,
-        headers: { Authorization: 'Bearer ' + this.CLOUD.token } }
+      { url: this.CLOUD.workerBase + this.CLOUD.gistId, headers: {} },
+      { url: this.CLOUD.apiBase + this.CLOUD.gistId, headers: {} }
     ];
     let lastError;
     for (const target of targets) {
@@ -683,45 +682,17 @@ const Store = {
   // 注意：GitHub 更新引用的正确端点是 refs/heads/<branch>（复数 refs），
   // 旧版错用 ref/heads/（单数）会稳定返回 404，导致镜像从未真正更新——这是多端不同步的隐藏根因之一。
   async _pushRepoMirror(dataContent) {
-    const owner = 'GXW-HUE', repo = 'banwei-workbench', branch = 'main';
-    const apiBase = 'https://api.github.com/repos/' + owner + '/' + repo + '/git/';
-    const H = {
-      'Authorization': 'Bearer ' + this.CLOUD.token,
-      'Accept': 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'banwei-workbench'
-    };
-    const J = async (r) => {
-      if (!r.ok) throw new Error('GitHub mirror HTTP ' + r.status);
-      return r.json();
-    };
-    const ref = await J(await fetch(apiBase + 'refs/heads/' + branch, { headers: H, cache: 'no-store' }));
-    if (!ref || !ref.object) throw new Error('ref err');
-    const parent = ref.object.sha;
-    const parentCommit = await J(await fetch(apiBase + 'commits/' + parent, { headers: H, cache: 'no-store' }));
-    const baseTree = parentCommit.tree.sha;
-    // 仅更新 sync/data.json；并显式删除仓库中残留的旧 sync/files_blob_* 分片文件，防止干扰。
-    const entries = [{ path: 'sync/data.json', mode: '100644', type: 'blob', content: dataContent }];
-    const treeList = await J(await fetch(apiBase + 'trees/' + baseTree + '?recursive=1', { headers: H, cache: 'no-store' }));
-    (treeList.tree || []).forEach(t => {
-      if (t.path && t.path.indexOf('sync/files_blob') === 0) {
-        entries.push({ path: t.path, mode: '100644', type: 'blob', sha: null });  // sha:null = 删除
-      }
+    const resp = await fetch(this.CLOUD.mirrorBase, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: dataContent }),
+      cache: 'no-store'
     });
-    for (const e of entries) {
-      if (e.content !== undefined && e.content !== null) {
-        const b = await J(await fetch(apiBase + 'blobs', { method: 'POST', headers: H, body: JSON.stringify({ content: e.content, encoding: 'utf-8' }) }));
-        if (!b.sha) throw new Error('blob err');
-        if (typeof b.size === 'number' && b.size !== new TextEncoder().encode(e.content).length) throw new Error('mirror blob size mismatch');
-        e.sha = b.sha; delete e.content;
-      }
-    }
-    const tree = await J(await fetch(apiBase + 'trees', { method: 'POST', headers: H, body: JSON.stringify({ base_tree: baseTree, tree: entries }) }));
-    const nc = await J(await fetch(apiBase + 'commits', { method: 'POST', headers: H, body: JSON.stringify({ message: 'sync: data mirror', tree: tree.sha, parents: [parent] }) }));
-    await J(await fetch(apiBase + 'refs/heads/' + branch, { method: 'PATCH', headers: H, body: JSON.stringify({ sha: nc.sha }) }));
+    if (!resp.ok) throw new Error('Cloud mirror HTTP ' + resp.status);
+    const result = await resp.json().catch(() => ({}));
     this.CLOUD._lastMirrorAt = new Date().toISOString();
     this.CLOUD._canReachCloud = true;
-    console.log('[sync] Pages 镜像已更新:', nc.sha);
+    console.log('[sync] Pages 镜像已更新:', result.sha || 'ok');
   },
 
   // 按需推送镜像：仅当本机数据比线上镜像新、且本机确认能连上 GitHub 时才推（手机连不上，自动跳过）
@@ -1372,7 +1343,7 @@ const Store = {
   async loadFileContent(fileId) {
     const file = this.getFiles().find(item => item && item.id === fileId);
     if (!file || (typeof file.content === 'string' && file.content.length)) return file;
-    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId + '?file=' + encodeURIComponent(fileId), { headers: { Authorization: 'Bearer ' + this.CLOUD.token }, cache: 'no-store' });
+    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId + '?file=' + encodeURIComponent(fileId), { cache: 'no-store' });
     if (!resp.ok) throw new Error('文件内容加载失败');
     const payload = await resp.json();
     if (!payload || typeof payload.content !== 'string') throw new Error('文件内容为空');
@@ -1385,7 +1356,7 @@ const Store = {
   async _hydrateFilesForPush(files) {
     const missing = (files || []).filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
     if (!missing.length) return files;
-    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId, { headers: { Authorization: 'Bearer ' + this.CLOUD.token }, cache: 'no-store' });
+    const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId, { cache: 'no-store' });
     if (!resp.ok) throw new Error('云端文件批量读取失败');
     const gist = await resp.json();
     const dataFile = gist && gist.files && gist.files['data.json'];
@@ -1532,10 +1503,9 @@ const Store = {
       });
       emptyData._files = [];
       try {
-        await fetch(this.CLOUD.apiBase + this.CLOUD.gistId, {
+        await fetch(this.CLOUD.workerBase + this.CLOUD.gistId, {
           method: 'PATCH',
           headers: {
-            'Authorization': 'Bearer ' + this.CLOUD.token,
             'Content-Type': 'application/json',
             'User-Agent': 'banwei-workbench'
           },
