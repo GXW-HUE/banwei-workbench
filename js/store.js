@@ -643,7 +643,12 @@ const Store = {
         // 永远判定“本机没有正文” → 新增附件只推 index.json，data.json 一直没有正文，
         // 其他设备看到“有文件、点开没内容/下载失败”。这是跨端文件不同步的根因。
         const localHasContent = Object.keys(this._contentCache || {}).length > 0;
-        let needFull = localHasContent && (!lastSig || lastSig !== filesSig || this.CLOUD._needContentUpload);
+        // 是否需要重传完整 data.json（含 10MB 附件正文）：
+        // 只跟“云端现有附件集合”比较。旧逻辑用本机 lastSig（上次整包推送记录），
+        // 新设备上该记录为空 → 任何一次记录编辑都被判定“附件变了”，白传 10MB（实测 55 秒）。
+        const cloudSig = this.CLOUD._cloudFilesSig || '';
+        const sigChanged = !cloudSig || cloudSig !== filesSig;
+        let needFull = localHasContent && (sigChanged || this.CLOUD._needContentUpload);
         let fullReady = !needFull;
         if (needFull) {
           try {
@@ -908,14 +913,14 @@ const Store = {
     // 自愈：本机曾成功整包推送过附件（有 _files_sig），但当前附件指纹与它不一致 →
     // 说明云端的 data.json 缺正文（历史上索引先于正文写入造成），立即补推一次整包。
     try {
-      const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
+      const cloudSig = this.CLOUD._cloudFilesSig || '';
       if (!this.CLOUD._sigCheckedAt && this._idbOk) {
         this.CLOUD._sigCheckedAt = Date.now();
         await this._refreshContentCache();
         const cachedCount = Object.keys(this._contentCache || {}).length;
         const sig = this._filesSignature(this.getFiles());
-        // 本机确实存着多份附件正文，且指纹与上次成功整包推送不一致（含从未记录签名）→ 补推整包
-        if (cachedCount >= 5 && sig && (!lastSig || sig !== lastSig)) this._setDirty();
+        // 本机确实存着多份附件正文，且与“云端附件集合”不一致（云端缺正文/多出本机文件）→ 补推整包
+        if (cachedCount >= 5 && sig && (!cloudSig || sig !== cloudSig)) this._setDirty();
       }
     } catch (e) {}
     if (this.CLOUD.dirty) this.pushToCloud();
@@ -1114,21 +1119,27 @@ const Store = {
       this._writeFilesWithContent(protectedFiles);
     }
     // 自修复：检测“本机持有内容、但云端缺失该内容”的文件，标记 _needContentUpload 触发补推
-    try {
-      const cloudContentIds = new Set();
-      const cfMap = cloudData._fileChunks || {};
-      Object.keys(cfMap).forEach(k => { if (typeof cfMap[k] === 'string' && cfMap[k].length) cloudContentIds.add(k.split('|')[0]); });
-      (cloudData._files || []).forEach(cf => {
-        if (typeof cf.content === 'string' && cf.content.length) cloudContentIds.add(cf.id);
-      });
-      // 自修复：本机 IndexedDB/_contentCache 有正文、但云端完整包里没有该文件内容 → 标记补推。
-      // 旧实现检查 f.content，但 getFiles() 返回的是元数据（正文已剥离），所以永远为 false。
-      const localContentIds = Object.keys(this._contentCache || {}).filter(id => {
-        const v = this._contentCache[id];
-        return typeof v === 'string' && v.length > 0;
-      });
-      this.CLOUD._needContentUpload = localContentIds.some(id => !cloudContentIds.has(id));
-    } catch (e) { this.CLOUD._needContentUpload = false; }
+    // 注意：轻量索引（_indexOnly）里没有 _fileChunks、_files[].content 也被剥掉，
+    // 用它来判断“云端缺正文”会把所有本机缓存过的文件都误判成缺失 →
+    // 每次轮询都置 _needContentUpload，任何一次小改动都会升级成 10MB 整包重传。
+    // 因此索引模式下不动这个标记，只认完整快照的判断结果。
+    if (!cloudData._indexOnly) {
+      try {
+        const cloudContentIds = new Set();
+        const cfMap = cloudData._fileChunks || {};
+        Object.keys(cfMap).forEach(k => { if (typeof cfMap[k] === 'string' && cfMap[k].length) cloudContentIds.add(k.split('|')[0]); });
+        (cloudData._files || []).forEach(cf => {
+          if (typeof cf.content === 'string' && cf.content.length) cloudContentIds.add(cf.id);
+        });
+        // 自修复：本机 IndexedDB/_contentCache 有正文、但云端完整包里没有该文件内容 → 标记补推。
+        // 旧实现检查 f.content，但 getFiles() 返回的是元数据（正文已剥离），所以永远为 false。
+        const localContentIds = Object.keys(this._contentCache || {}).filter(id => {
+          const v = this._contentCache[id];
+          return typeof v === 'string' && v.length > 0;
+        });
+        this.CLOUD._needContentUpload = localContentIds.some(id => !cloudContentIds.has(id));
+      } catch (e) { this.CLOUD._needContentUpload = false; }
+    }
     // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
     if (cloudData._deleted && typeof cloudData._deleted === 'object') {
       const mergedTombs = {};
@@ -1166,6 +1177,9 @@ const Store = {
   // 统一处理：跨设备新增/删除同步、离线改动保护、全新设备首拉；返回 true 表示已合并并写入本地
   _mergeCloudData(cloudData, silent) {
     if (!cloudData || typeof cloudData !== 'object') return false;
+    // 记录“云端当前的附件集合指纹”：推送时以它为准判断是否需要重传完整 data.json，
+    // 避免新设备（本机没有上次推送记录）把一次记录编辑也变成 10MB 整包上传。
+    try { this.CLOUD._cloudFilesSig = this._filesSignature(cloudData._files); } catch (e) {}
     const cloudTs = cloudData.lastModified ? Date.parse(cloudData.lastModified) : 0;
     const localTs = this._getLocalModified();
     const localData = this._collectAllData();
