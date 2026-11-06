@@ -201,13 +201,20 @@ const App = {
         if (ok > 0) {
           // 必须等 FileReader/IndexedDB 本地保存完成后再推送，否则批量上传时
           // 同步请求可能先于文件落盘，造成“提示成功但云端少文件”。
+          this._notifyNextPush = true;
+          this.toast('⏫ 已保存到本机，正在自动同步到云端…', 'info');
           Store.syncNow().then(res => {
             if (res.push && res.push.success) {
+              this._notifyNextPush = false;
               this.toast(`导入完成：成功 ${ok}/${total} 个，已同步到云端`, fail ? 'warning' : 'success');
             } else {
+              this._notifyNextPush = false;
               this.toast(`导入完成：成功 ${ok}/${total} 个；云端同步失败，数据已保存在本机并将自动重试`, 'warning');
             }
-          }).catch(() => this.toast(`导入完成：成功 ${ok}/${total} 个；云端同步失败，稍后自动重试`, 'warning'));
+          }).catch(() => {
+            this._notifyNextPush = false;
+            this.toast(`导入完成：成功 ${ok}/${total} 个；云端同步失败，稍后自动重试`, 'warning');
+          });
         } else if (total > 0) {
           this.toast(`导入失败：所选 ${total} 个文件均未成功导入`, 'error');
         }
@@ -2099,6 +2106,27 @@ const App = {
 
   closeConfirm() {
     document.getElementById('confirm-overlay').classList.remove('show');
+  },
+
+  // ===== 云端同步回调（由 store.js 推送/拉取完成后调用）=====
+  // 上传/删除后自动把当前页面刷新成云端最新状态，不需要用户手动刷新。
+  onCloudPushDone() {
+    if (this._notifyNextPush) {
+      this._notifyNextPush = false;
+      this.toast('☁️ 已同步到云端，其他设备约 5 秒内自动刷新', 'success');
+    }
+    const m = this.currentModule;
+    if (m === 'files' || (MODULE_CONFIG[m] && MODULE_CONFIG[m].type === 'table')) {
+      try { this.renderModule(m); } catch (e) {}
+    }
+  },
+
+  // 其他设备有新数据：store 已经重绘，这里只给一次轻提示（15 秒内不重复）
+  onRemoteUpdate() {
+    const now = Date.now();
+    if (this._lastRemoteToastAt && now - this._lastRemoteToastAt < 15000) return;
+    this._lastRemoteToastAt = now;
+    this.toast('🔄 已自动获取其他设备的新数据', 'info');
   },
 
   // ===== Toast通知 =====
