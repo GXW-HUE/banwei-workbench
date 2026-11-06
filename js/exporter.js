@@ -224,6 +224,46 @@ const Exporter = {
     this._finishHtmlPreview();
   },
 
+  // 统一补全文件扩展名：安卓/微信浏览器会丢掉没有扩展名的文件名，
+  // 下载下来就变成一串 UUID，系统认不出格式（用户看到的“文件格式变了”）。
+  _ensureExt(name, typeOrMime) {
+    const raw = String(name || '').trim();
+    const hint = String(typeOrMime || '').toLowerCase();
+    const mimeToExt = {
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+      'application/msword': 'doc',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+      'application/vnd.ms-excel': 'xls',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+      'application/vnd.ms-powerpoint': 'ppt',
+      'application/pdf': 'pdf',
+      'text/csv': 'csv',
+      'application/json': 'json',
+      'image/jpeg': 'jpg',
+      'image/png': 'png'
+    };
+    const typeToExt = { word: 'docx', excel: 'xlsx', pdf: 'pdf', ppt: 'pptx', image: 'png' };
+    const ext = mimeToExt[hint] || typeToExt[hint] || 'bin';
+    if (/\.(docx|doc|xlsx|xls|pptx|ppt|pdf|csv|json|jpg|jpeg|png|gif|bmp|webp|txt|zip)$/i.test(raw)) return raw;
+    if (!raw) return '附件.' + ext;
+    return raw + '.' + ext;
+  },
+
+  _extToMime(ext) {
+    const map = {
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      doc: 'application/msword',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      xls: 'application/vnd.ms-excel',
+      csv: 'text/csv',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      ppt: 'application/vnd.ms-powerpoint',
+      pdf: 'application/pdf',
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp'
+    };
+    return map[String(ext || '').toLowerCase()] || 'application/octet-stream';
+  },
+
   // base64 → Uint8Array（兼容 data: URL 前缀）
   _base64ToUint8(base64) {
     try {
@@ -245,8 +285,8 @@ const Exporter = {
   },
 
   // base64 附件纯前端在线预览（docx → docx-preview；xlsx → SheetJS；pdf/图片 → iframe）
-  previewBase64Content(base64, fileName) {
-    const name = fileName || '文档预览';
+  previewBase64Content(base64, fileName, typeHint) {
+    const name = this._ensureExt(fileName || '文档预览', typeHint);
     const ext = (name.split('.').pop() || '').toLowerCase();
     const u8 = this._base64ToUint8(base64);
     if (!u8) {
@@ -254,18 +294,30 @@ const Exporter = {
       return;
     }
 
-    // Word：docx-preview 纯前端渲染
+    // Word：docx-preview 纯前端渲染；渲染失败时退回 mammoth 提取 HTML（手机浏览器兼容性更好）
     if (ext === 'docx') {
       this._openPreviewShell(name, null, 'html', null, () => {
         this._downloadUint8(name, u8, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       });
+      const blob = new Blob([u8], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const renderWithMammoth = () => {
+        if (typeof mammoth === 'undefined') { this._renderHtmlPreviewError(); return; }
+        blob.arrayBuffer()
+          .then(buf => mammoth.convertToHtml({ arrayBuffer: buf }))
+          .then(result => {
+            const el = document.getElementById('doc-preview-html');
+            if (!el) return;
+            el.innerHTML = '<div class="docx-mammoth">' + (result.value || '') + '</div>';
+            this._finishHtmlPreview();
+          })
+          .catch(err => { console.error('mammoth 提取失败:', err); this._renderHtmlPreviewError(); });
+      };
       if (typeof docx !== 'undefined') {
-        const blob = new Blob([u8], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
         docx.renderAsync(blob, document.getElementById('doc-preview-html'))
           .then(() => this._finishHtmlPreview())
-          .catch(err => { console.error('docx 渲染失败:', err); this._renderHtmlPreviewError(); });
+          .catch(err => { console.warn('docx-preview 渲染失败，改用 mammoth 提取:', err); renderWithMammoth(); });
       } else {
-        this._renderHtmlPreviewError();
+        renderWithMammoth();
       }
       return;
     }
@@ -453,7 +505,7 @@ const Exporter = {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = fileName || 'download';
+    a.download = this._ensureExt(fileName, blob.type) || 'download';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
@@ -1776,29 +1828,27 @@ const Exporter = {
     const mime = mimeByExt[ext] || blob.type || 'application/octet-stream';
     const fileBlob = new Blob([blob], { type: mime });
     const url = URL.createObjectURL(fileBlob);
+    const safeName = this._ensureExt(fileName, mime);
 
     if (ext === 'pdf') {
       // PDF 直接在浏览器新标签页预览
       const win = window.open(url, '_blank');
       if (!win || win.closed || typeof win.closed === 'undefined') {
-        this.fallbackOpen(url, fileName);
+        this.fallbackOpen(url, safeName);
       }
     } else {
-      // Office 文件（docx/xlsx/pptx）：用 window.open 触发浏览器调用系统关联程序
-      // 关键：不设 download 属性 → 浏览器根据 MIME 类型决定行为
-      // 已装 WPS/Office → 直接用关联程序打开；未装 → 弹出"如何处理"对话框
-      const win = window.open(url, '_blank');
-      if (!win || win.closed || typeof win.closed === 'undefined') {
-        // 弹窗被拦截兜底：不带 download 的 a 标签
-        const a = document.createElement('a');
-        a.href = url;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-      App.toast('✅ 系统将自动调用 WPS / Office 打开', 'success');
+      // Office 文件（docx/xlsx/pptx）：直接以原文件名下载。
+      // 旧实现用 window.open(blobUrl)，安卓/微信浏览器会把 blob URL 的 UUID 当文件名、
+      // 且丢掉扩展名，用户看到的就是“下载后文件格式变了”，所以这里必须走带 download 属性的链接。
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = safeName;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      App.toast('已开始下载：' + safeName + '，可用 WPS / Office 打开', 'success');
     }
 
     // 预留较长时间再释放，保证办公软件能读取
@@ -1812,9 +1862,14 @@ const Exporter = {
       this.openAssetFile(fileInfo.assetUrl, fileInfo.name);
       return;
     }
-    if (fileInfo.isAttachment && fileInfo.content) {
+    if (fileInfo.isAttachment && typeof fileInfo.content === 'string' && fileInfo.content.length) {
       // base64 附件：纯前端在线预览（docx / xlsx / pdf / 图片），无需下载
-      this.previewBase64Content(fileInfo.content, fileInfo.name);
+      this.previewBase64Content(fileInfo.content, fileInfo.name, fileInfo.mimeType || fileInfo.type);
+      return;
+    }
+    if (fileInfo.isAttachment) {
+      // 附件记录但本机没有正文：不要走“重新导出”（那会生成一份新文档，看起来像格式变了）
+      App.toast('该文件内容还没加载到本机，请联网稍等几秒后重试', 'warning');
       return;
     }
     if (fileInfo.cloudLimited) {
