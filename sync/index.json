@@ -1487,6 +1487,26 @@
       "contentChunkCount": 1,
       "contentLength": 18052,
       "contentIn": "data"
+    },
+    {
+      "name": "自测v64b.docx",
+      "module": "files",
+      "moduleTitle": "文件中心",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 29128,
+      "id": "file_1793979974402_weeavp",
+      "createdAt": "2026-11-06T15:46:14.402Z",
+      "hasContent": true,
+      "contentChars": 29128,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 29128,
+      "contentIn": "file"
     }
   ],
   "_deleted": {
