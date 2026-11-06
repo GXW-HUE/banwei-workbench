@@ -830,10 +830,10 @@ const Store = {
     setInterval(() => {
       if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
     }, 20000);
-    // 页面开着时每 15s 自动检查其他设备的新数据（接近"立马同步"）
+    // 页面开着时每 10s 自动检查其他设备的新数据（只拉轻量索引，约 2-3 秒）
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
-    }, 15000);
+    }, 10000);
     // 定时把数据镜像推到网站（手机等连不上 GitHub 的设备靠它同步），保证镜像始终接近实时
     setInterval(() => {
       if (document.hidden) return;
@@ -856,14 +856,31 @@ const Store = {
     // 即使本地有待推送改动也照常拉取：双向合并会保留本地改动、同时同步其他设备的增删，合并后再补推
     // 最小间隔保护：focus/visibility 事件可能短时间内连续触发
     const now = Date.now();
-    if (this.CLOUD._lastPullAt && now - this.CLOUD._lastPullAt < 10000) return;
-    this.CLOUD._lastPullAt = now;
+    // 注意：_lastPullAt 是给面板显示的 ISO 字符串，不能拿来做数值间隔判断，
+    // 否则 now - '2026-...' 得到 NaN，节流形同虚设。
+    if (this.CLOUD._lastForegroundAt && now - this.CLOUD._lastForegroundAt < 8000) return;
+    this.CLOUD._lastForegroundAt = now;
+    // 云端快照指纹：用于“只在数据真的变了才重绘”，避免每轮轮询都把页面重绘一次
+    const digest = (d) => {
+      if (!d) return '';
+      let n = 0;
+      Object.keys(MODULE_CONFIG).forEach(m => { if (Array.isArray(d[m])) n += d[m].length; });
+      return (d.lastModified || '') + '|' + n + '|' + (Array.isArray(d._files) ? d._files.length : 0);
+    };
     const applyResult = (result) => {
-      if (result && result.success && result.hasData && result.data) {
-        const merged = this._mergeCloudData(result.data);
-        if (merged && window.App && window.App.renderModule) {
-          try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
-        }
+      if (!result || !result.success || !result.hasData || !result.data) return;
+      const dg = digest(result.data);
+      if (dg && dg === this.CLOUD._lastAppliedDigest && !this.CLOUD._renderPending) return;
+      const merged = this._mergeCloudData(result.data);
+      if (!merged) return;
+      this.CLOUD._lastAppliedDigest = dg;
+      // 用户正在表单里输入/弹窗中：先合并数据，等下次轮询再刷新界面，避免打断输入
+      const editing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+      const modal = document.querySelector('.modal.show, .modal-mask.show, .modal.active');
+      if (editing || modal) { this.CLOUD._renderPending = true; return; }
+      this.CLOUD._renderPending = false;
+      if (window.App && window.App.renderModule) {
+        try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
       }
     };
     // 最快通道先返回先渲染，全部通道完成后再用最新数据校正一次
