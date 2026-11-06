@@ -638,19 +638,24 @@ const Store = {
         // data.json 仍保持完整格式，老设备/旧缓存读取不受影响。
         const filesSig = this._filesSignature(allData.data._files);
         const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
-        // 只有本机真的持有附件正文时才需要整包上传；手机等只有元数据的设备只推索引
-        const localHasChunks = Object.keys(allData.data._fileChunks || {}).length > 0;
-        let needFull = localHasChunks && (!lastSig || lastSig !== filesSig);
+        // 本机是否真的持有附件正文：_refreshContentCache() 已把 IndexedDB 正文装进 _contentCache。
+        // 旧实现用 _collectAllData()._fileChunks 判断，而元数据里的正文始终为空 →
+        // 永远判定“本机没有正文” → 新增附件只推 index.json，data.json 一直没有正文，
+        // 其他设备看到“有文件、点开没内容/下载失败”。这是跨端文件不同步的根因。
+        const localHasContent = Object.keys(this._contentCache || {}).length > 0;
+        let needFull = localHasContent && (!lastSig || lastSig !== filesSig || this.CLOUD._needContentUpload);
+        let fullReady = !needFull;
         if (needFull) {
           try {
-            // 只有在确实要重传附件时才去补正文（会下载完整云端包，手机上很贵）
+            // 补正文：优先用本机 IndexedDB 缓存，只有本机确实没有的文件才去云端下载
             const expectedFiles = await this._hydrateFilesForPush(this.getFiles());
             allData = this._safeCollectAllData();
             allData.data.lastModified = new Date().toISOString();
-            if (!this._validateCloudFilePayload(allData.data, expectedFiles)) needFull = false;
+            fullReady = this._validateCloudFilePayload(allData.data, expectedFiles);
+            if (!fullReady) console.warn('附件正文校验未通过，本轮不推索引，避免索引指向缺失内容');
           } catch (e) {
-            console.warn('附件正文不可用，本轮只同步索引:', e);
-            needFull = false;
+            console.warn('附件正文不可用，本轮不推索引（稍后重试）:', e);
+            fullReady = false;
           }
         }
         const fullContent = JSON.stringify(allData.data, null, 2);
@@ -666,11 +671,16 @@ const Store = {
           }
           return false;
         };
-        // 先传附件正文（大），再传索引，保证任何设备读到索引时正文已就绪
+        // 先传附件正文（大），再传索引，保证任何设备读到索引时正文已就绪。
+        // 正文没准备好/上传失败时绝不写索引：索引领先于正文 = 其他设备看到“有记录、没内容”。
+        if (needFull && !fullReady) {
+          throw new Error('附件正文尚未就绪，暂不推送索引');
+        }
         if (needFull) {
           const okFull = await pushOneFile('data.json', fullContent);
-          if (!okFull) console.warn('附件正文上传失败，本轮先同步记录索引:', lastErr);
-          else { try { localStorage.setItem(this.PREFIX + '_files_sig', filesSig); } catch (e) {} }
+          if (!okFull) throw new Error('附件正文上传失败，暂不推送索引');
+          try { localStorage.setItem(this.PREFIX + '_files_sig', filesSig); } catch (e) {}
+          this.CLOUD._needContentUpload = false;
         }
         const gistOk = await pushOneFile('index.json', indexContent);
         if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
@@ -888,6 +898,17 @@ const Store = {
     applyResult(result);
     // 云端确认为空（全新班级）或拉取成功：首拉阶段结束，允许后续推送
     if (result.success && !result.hasData) this._markMerged();
+    // 自愈：本机曾上传过附件，但当前附件指纹与“上次成功整包推送”的指纹不一致 →
+    // 说明云端的 data.json 缺正文（历史上索引先于正文写入造成），立即补推一次整包。
+    try {
+      if (!this.CLOUD._sigCheckedAt && localStorage.getItem(this.PREFIX + '_has_local_content') === '1') {
+        this.CLOUD._sigCheckedAt = Date.now();
+        await this._refreshContentCache();
+        const sig = this._filesSignature(this.getFiles());
+        const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
+        if (sig && lastSig && sig !== lastSig) this._setDirty();
+      }
+    } catch (e) {}
     if (this.CLOUD.dirty) this.pushToCloud();
   },
 
@@ -1001,8 +1022,15 @@ const Store = {
   },
 
   // 附件集合指纹：只有附件增删/长度变化时才需要重传完整的 data.json
+  // 附件集合指纹：本地元数据只有 contentChars，云端包只有 contentLength，必须用同一套算法，
+  // 否则“本机签名”与“上次推送签名”永远对不上，或永远误判为一致（后者会让新增附件永远不传正文）。
   _filesSignature(files) {
-    return (files || []).map(f => f && (f.id + ':' + (Number(f.contentLength) || 0) + ':' + (Number(f.contentChunkCount) || 0))).sort().join('|');
+    return (files || []).map(f => {
+      if (!f) return '';
+      const len = Number(f.contentLength) || Number(f.contentChars) || 0;
+      const chunk = Math.max(1, Math.ceil(len / 420000));
+      return f.id + ':' + len + ':' + chunk;
+    }).sort().join('|');
   },
 
   _validateCloudFilePayload(cloudData, expectedFiles) {
@@ -1045,7 +1073,8 @@ const Store = {
       //   3) 兜底：云端无内容（历史 cloudLimited/超大降级）时，本机有则保留。
       const localFiles = this.getFiles();
       const chunks = cloudData._fileChunks || {};
-      const protectedFiles = (cloudData._files || []).map(cf => {
+      const fileTombs = (cloudData._deleted && cloudData._deleted._files) || {};
+      const protectedFiles = (cloudData._files || []).filter(cf => cf && !fileTombs[cf.id]).map(cf => {
         let content = null;
         if (typeof cf.content === 'string' && cf.content.length > 0) {
           content = cf.content;                          // 小文件内联
@@ -1063,21 +1092,33 @@ const Store = {
         }
         return cf;
       });
+      // 云端索引可能落后于本机（例如附件正文还在上传队列里）。本机独有、且云端没有墓碑的文件必须保留，
+      // 否则一次滞后的索引就会把用户刚上传的文件从列表里抹掉（表现为“文件突然不见了”）。
+      localFiles.forEach(lf => {
+        if (!lf || !lf.id || fileTombs[lf.id]) return;
+        if (protectedFiles.some(p => p && p.id === lf.id)) return;
+        const cached = this._contentCache ? this._contentCache[lf.id] : null;
+        if (typeof cached === 'string' && cached.length) protectedFiles.push(Object.assign({}, lf, { content: cached }));
+        else protectedFiles.push(lf);
+      });
       // 云端带来的文件内容写入 IndexedDB，元数据写入 localStorage
       this._writeFilesWithContent(protectedFiles);
     }
     // 自修复：检测“本机持有内容、但云端缺失该内容”的文件，标记 _needContentUpload 触发补推
     try {
-      const localFiles2 = this.getFiles();
       const cloudContentIds = new Set();
       const cfMap = cloudData._fileChunks || {};
       Object.keys(cfMap).forEach(k => { if (typeof cfMap[k] === 'string' && cfMap[k].length) cloudContentIds.add(k.split('|')[0]); });
       (cloudData._files || []).forEach(cf => {
         if (typeof cf.content === 'string' && cf.content.length) cloudContentIds.add(cf.id);
       });
-      const localHasMissingContent = (localFiles2 || []).some(f =>
-        typeof f.content === 'string' && f.content.length > 0 && !cloudContentIds.has(f.id));
-      this.CLOUD._needContentUpload = !!localHasMissingContent;
+      // 自修复：本机 IndexedDB/_contentCache 有正文、但云端完整包里没有该文件内容 → 标记补推。
+      // 旧实现检查 f.content，但 getFiles() 返回的是元数据（正文已剥离），所以永远为 false。
+      const localContentIds = Object.keys(this._contentCache || {}).filter(id => {
+        const v = this._contentCache[id];
+        return typeof v === 'string' && v.length > 0;
+      });
+      this.CLOUD._needContentUpload = localContentIds.some(id => !cloudContentIds.has(id));
     } catch (e) { this.CLOUD._needContentUpload = false; }
     // 合并删除墓碑（本地 ∪ 云端，同 id 取较新时间戳），让删除跨设备生效
     if (cloudData._deleted && typeof cloudData._deleted === 'object') {
@@ -1446,8 +1487,17 @@ const Store = {
   },
 
   async _hydrateFilesForPush(files) {
-    const missing = (files || []).filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
-    if (!missing.length) return files;
+    // 先把本机 IndexedDB/_contentCache 里的正文挂回元数据，避免为了“补正文”去下载 10MB 云端包
+    const attachLocal = (file) => {
+      if (!file) return file;
+      if (typeof file.content === 'string' && file.content.length) return file;
+      const cached = this._contentCache ? this._contentCache[file.id] : null;
+      if (typeof cached === 'string' && cached.length) return Object.assign({}, file, { content: cached, hasContent: true });
+      return file;
+    };
+    const withLocal = (files || []).map(attachLocal);
+    const missing = withLocal.filter(file => file && file.hasContent && !(typeof file.content === 'string' && file.content.length));
+    if (!missing.length) { this._writeFilesWithContent(withLocal); return this.getFiles(); }
     const resp = await fetch(this.CLOUD.workerBase + this.CLOUD.gistId, { cache: 'no-store' });
     if (!resp.ok) throw new Error('云端文件批量读取失败');
     const gist = await resp.json();
@@ -1456,7 +1506,7 @@ const Store = {
     const cloud = JSON.parse(dataFile.content);
     const chunks = cloud._fileChunks || {};
     const byId = new Map((cloud._files || []).map(file => [file.id, file]));
-    const hydrated = (files || []).map(file => {
+    const hydrated = withLocal.map(file => {
       if (!file || !(file.hasContent && !(typeof file.content === 'string' && file.content.length))) return file;
       const remote = byId.get(file.id);
       if (!remote || remote.cloudLimited) return file;
@@ -1506,6 +1556,8 @@ const Store = {
     }
     // 兜底确保内存缓存命中，使本次调用后立即可读（预览/下载）
     if (content) this._contentCache[fileInfo.id] = content;
+    // 标记“本机确实持有附件正文”，供推送侧判断能否整包上传（手机等只有元数据的设备不受影响）
+    if (content) { try { localStorage.setItem(this.PREFIX + '_has_local_content', '1'); } catch (e) {} }
     this.schedulePush();
     return Object.assign({}, fileInfo, { content: content });
   },
