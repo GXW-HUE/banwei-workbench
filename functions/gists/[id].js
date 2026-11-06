@@ -36,7 +36,39 @@ export async function onRequest({ request, params, env }) {
   if (!token) return new Response(JSON.stringify({ error: 'Cloud sync credentials are not configured' }), { status: 503, headers: { ...cors, 'Content-Type': 'application/json' } });
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 90000);
+  const requestUrl = new URL(request.url);
+  const rawBase = 'https://gist.githubusercontent.com/GXW-HUE/' + GIST + '/raw/';
+  const jsonCors = { ...cors, 'Content-Type': 'application/json; charset=utf-8' };
+  // v64：索引与附件小文件直接走 gist raw（单文件、可缓存、约 1 秒），
+  // 不再每次请求都拉整个 gist（其中含 10MB data.json，实测 2.5-14 秒且偶发 503）。
+  async function fastRaw(name) {
+    try {
+      const r = await fetch(rawBase + name + '?t=' + Date.now(), { signal: ctl.signal, headers: { 'Cache-Control': 'no-cache' } });
+      if (!r.ok) return null;
+      const txt = await r.text();
+      if (!txt || txt.charAt(0) !== '{') return null;
+      return txt;
+    } catch (e) { return null; }
+  }
   try {
+    if (request.method === 'GET' && requestUrl.searchParams.get('index') === '1') {
+      const fast = await fastRaw('index.json');
+      if (fast) return new Response(fast, { headers: jsonCors });
+    }
+    if (request.method === 'GET' && requestUrl.searchParams.get('file')) {
+      const fid = requestUrl.searchParams.get('file');
+      if (fid && /^[A-Za-z0-9_-]+$/.test(fid)) {
+        const fast = await fastRaw('c_' + fid + '.json');
+        if (fast) {
+          try {
+            const payload = JSON.parse(fast);
+            if (payload && typeof payload.content === 'string' && payload.content.length) {
+              return new Response(JSON.stringify({ id: fid, content: payload.content }), { headers: jsonCors });
+            }
+          } catch (e) {}
+        }
+      }
+    }
     let body;
     if (request.method === 'PATCH') {
       if (Number(request.headers.get('Content-Length') || 0) > LIMIT) return new Response('Too large', { status: 413, headers: cors });
@@ -60,7 +92,6 @@ export async function onRequest({ request, params, env }) {
       if (new TextEncoder().encode(file.content).length > LIMIT) throw new Error('Raw file too large');
       file.truncated = false;
     }
-    const requestUrl = new URL(request.url);
     // 轻量索引：只含记录与文件元数据（几十 KB），手机端秒开/秒推用。
     // 优先读 gist 里的 index.json；首次迁移还没有时，从完整 data.json 现裁一份（兼容老数据）。
     if (requestUrl.searchParams.get('index') === '1') {
