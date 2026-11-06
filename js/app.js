@@ -816,7 +816,7 @@ const App = {
       Exporter.previewDocument(fileToOpen.assetUrl, fileName);
     } else if (fileToOpen.content) {
       // base64 附件：纯前端在线预览（docx / xlsx / pdf / 图片）
-      Exporter.previewBase64Content(fileToOpen.content, fileToOpen.name || '附件预览');
+      Exporter.previewBase64Content(fileToOpen.content, fileToOpen.name || '附件预览', fileToOpen.mimeType || fileToOpen.type);
     } else {
       Exporter.openSourceFile(record.sourceFile);
     }
@@ -1705,11 +1705,18 @@ const App = {
     }, 10);
   },
 
-  downloadFileRecord(fileId) {
+  async downloadFileRecord(fileId) {
     const files = Store.getFiles();
-    const file = files.find(f => f.id === fileId);
-    if (!file || !file.content) {
-      this.toast('文件内容不存在', 'error');
+    let file = files.find(f => f.id === fileId);
+    if (!file) { this.toast('文件不存在', 'error'); return; }
+    // 元数据里不再保存正文（正文在 IndexedDB / 云端），这里先按需补齐，
+    // 否则手机端（本机没有正文缓存）会一直报“文件内容不存在”。
+    if (!(typeof file.content === 'string' && file.content.length)) {
+      this.toast('正在准备文件…', 'info');
+      try { file = await Store.loadFileContent(fileId); } catch (e) {}
+    }
+    if (!file || !(typeof file.content === 'string' && file.content.length)) {
+      this.toast('该文件内容还没同步到本机，请先联网打开本页停留十几秒后再试', 'error');
       return;
     }
     const mimeMap = {
@@ -1723,10 +1730,14 @@ const App = {
     const byteNumbers = new Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
     const blob = new Blob([new Uint8Array(byteNumbers)], { type: mime });
+    // 文件名兜底补扩展名：安卓浏览器会丢弃无扩展名的文件名，下载后变成一串 UUID，
+    // 系统就认不出是 docx/xlsx，表现为“文件格式变了”。
+    const fileName = Exporter._ensureExt(file.name, mime);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = file.name;
+    a.download = fileName;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1735,6 +1746,7 @@ const App = {
     setTimeout(() => {
       try { URL.revokeObjectURL(url); } catch (e) {}
     }, 8000);
+    this.toast('已开始下载：' + fileName, 'success');
   },
 
   exportFolder(moduleId) {
