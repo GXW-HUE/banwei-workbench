@@ -712,6 +712,9 @@ const Store = {
         this.CLOUD.syncStatus = 'idle';
         this._updateIndicator();
         this._clearDirty();
+        if (window.App && window.App.onCloudPushDone) {
+          try { window.App.onCloudPushDone(); } catch (e) {}
+        }
         return { success: true };
       }
     } catch (e) {
@@ -836,14 +839,15 @@ const Store = {
     // 窗口重新获得焦点（切回浏览器标签/手机切回 App）：立即拉取
     window.addEventListener('focus', () => { this._foregroundSync(); });
     document.addEventListener('resume', () => { this._foregroundSync(); });
-    // 定时：有待推送数据每 20s 重试推送
+    // 定时：有待推送数据每 10s 重试推送
     setInterval(() => {
       if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
-    }, 20000);
-    // 页面开着时每 10s 自动检查其他设备的新数据（只拉轻量索引，约 2-3 秒）
+    }, 10000);
+    // 页面开着时每 5s 自动检查其他设备的新数据（只拉轻量索引，约 1-2 秒），
+    // 配合“数据没变就不重绘”，做到别的设备一上传这里几秒内自动刷新。
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
-    }, 10000);
+    }, 5000);
     // 定时把数据镜像推到网站（手机等连不上 GitHub 的设备靠它同步），保证镜像始终接近实时
     setInterval(() => {
       if (document.hidden) return;
@@ -868,7 +872,7 @@ const Store = {
     const now = Date.now();
     // 注意：_lastPullAt 是给面板显示的 ISO 字符串，不能拿来做数值间隔判断，
     // 否则 now - '2026-...' 得到 NaN，节流形同虚设。
-    if (this.CLOUD._lastForegroundAt && now - this.CLOUD._lastForegroundAt < 8000) return;
+    if (this.CLOUD._lastForegroundAt && now - this.CLOUD._lastForegroundAt < 3000) return;
     this.CLOUD._lastForegroundAt = now;
     // 云端快照指纹：用于“只在数据真的变了才重绘”，避免每轮轮询都把页面重绘一次
     const digest = (d) => {
@@ -891,6 +895,9 @@ const Store = {
       this.CLOUD._renderPending = false;
       if (window.App && window.App.renderModule) {
         try { window.App.renderModule(window.App.currentModule || 'dashboard'); } catch (e) {}
+      }
+      if (window.App && window.App.onRemoteUpdate) {
+        try { window.App.onRemoteUpdate(); } catch (e) {}
       }
     };
     // 最快通道先返回先渲染，全部通道完成后再用最新数据校正一次
