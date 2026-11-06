@@ -732,7 +732,7 @@ const App = {
     // 有原始文件时：详情 + 在线预览入口
     let sourceFile = record.sourceFile;
     if (!sourceFile) {
-      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && f.content);
+      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && (f.hasContent || f.content));
       if (moduleFiles.length > 0) sourceFile = { fileId: moduleFiles[0].id };
     }
 
@@ -788,7 +788,9 @@ const App = {
     // 兜底：记录没有 sourceFile 时，从文件中心查找同模块的最新文件
     let sourceFile = record.sourceFile;
     if (!sourceFile) {
-      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && f.content);
+      // 兜底只要求“云端确实有正文”（hasContent），不能只认本机缓存 content，
+      // 否则新设备/手机端永远找不到可预览的原始文件。
+      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && (f.hasContent || f.content));
       if (moduleFiles.length > 0) {
         sourceFile = { fileId: moduleFiles[0].id };
       }
@@ -809,7 +811,24 @@ const App = {
         App.toast('找不到源文件，请重新导入', 'error');
         return;
       }
-      fileToOpen = fileInfo;
+      // 手机端本机通常只有元数据、没有正文（正文在云端/IndexedDB）：
+      // 旧实现此时直接落到 openSourceFile()，于是又走回“下载/另存”，
+      // 表现为“手机端无法预览、下载后文件名变成 UUID”。这里先按需补齐正文再预览。
+      if (!(typeof fileInfo.content === 'string' && fileInfo.content.length) && fileInfo.hasContent !== false) {
+        App.toast('正在加载文件内容…', 'info');
+        try {
+          fileToOpen = await Store.loadFileContent(fileInfo.id);
+        } catch (e) {
+          App.toast('文件内容暂时无法加载，请联网后重试', 'error');
+          return;
+        }
+      } else {
+        fileToOpen = fileInfo;
+      }
+      if (!(typeof fileToOpen.content === 'string' && fileToOpen.content.length)) {
+        App.toast('该文件内容还没同步到本机，请联网停留十几秒后再试', 'warning');
+        return;
+      }
     }
 
     if (!fileToOpen) {
@@ -838,7 +857,7 @@ const App = {
     // 兜底：没有 sourceFile 时从文件中心查找同模块最新文件
     let sourceFile = record.sourceFile;
     if (!sourceFile) {
-      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && f.content);
+      const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && (f.hasContent || f.content));
       if (moduleFiles.length > 0) sourceFile = { fileId: moduleFiles[0].id };
     }
 
@@ -1835,7 +1854,9 @@ const App = {
           💡 数据自动同步到云端，在任何设备打开网址都能看到相同数据。修改后约3秒自动上传。
           ${(() => {
             const fs = Store.getFiles() || [];
-            const miss = fs.filter(f => !(typeof f.content === 'string' && f.content.length > 0)).length;
+            // 只统计“云端确实没有正文”的文件。手机/新设备本机没有正文是正常状态
+            // （正文按需从云端拉取），按本地 content 判断会把 47 个文件全报成缺失误导用户。
+            const miss = fs.filter(f => f && (f.hasContent === false || f.cloudLimited)).length;
             if (!miss) return '';
             return `<br>⚠️ 有 <b>${miss}</b> 个文件的内容还没同步到云端（其它设备打开时无法预览/导出原文件）。`
               + '请在<b>原来上传这些文件的那台设备</b>上打开本网站并联网停留十几秒，系统会自动补传；'
