@@ -1,34 +1,59 @@
-const ORIGIN = 'https://gxw-hue.github.io';
+const ALLOWED_ORIGINS = [
+  'https://gxw-hue.github.io',
+  'https://banwei-sync-api.pages.dev'
+];
 const GIST = '1a9cbefeb7b98260e552c057924d67ae';
 const LIMIT = 20 * 1024 * 1024;
-const cors = { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Methods': 'GET, PATCH, OPTIONS', 'Access-Control-Allow-Headers': 'Accept, Authorization, Content-Type', 'Cache-Control': 'no-store', 'Vary': 'Origin' };
-export async function onRequest({request, params, env}) {
-  if (request.headers.get('Origin') !== ORIGIN) return new Response('Forbidden', {status:403});
-  if (params.id !== GIST) return new Response('Not found', {status:404,headers:cors});
-  if (request.method === 'OPTIONS') return new Response(null,{status:204,headers:cors});
-  if (!['GET','PATCH'].includes(request.method)) return new Response('Method not allowed',{status:405,headers:cors});
-  const token = env && env.GIST_TOKEN;
-  if (!token) return new Response(JSON.stringify({error:'Cloud sync credentials are not configured'}),{status:503,headers:{...cors,'Content-Type':'application/json'}});
+
+function checkOrigin(request) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return { allowed: true, echo: '' };
+  if (ALLOWED_ORIGINS.includes(origin)) return { allowed: true, echo: origin };
+  if (/^https:\/\/[a-z0-9-]+\.banwei-sync-api\.pages\.dev$/.test(origin)) return { allowed: true, echo: origin };
+  return { allowed: false, echo: '' };
+}
+
+function corsHeaders(echo) {
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, PATCH, OPTIONS',
+    'Access-Control-Allow-Headers': 'Accept, Authorization, Content-Type',
+    'Access-Control-Allow-Max-Age': '86400',
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin'
+  };
+  if (echo) headers['Access-Control-Allow-Origin'] = echo;
+  return headers;
+}
+
+export async function onRequest({ request, params, env }) {
+  const origin = checkOrigin(request);
+  const cors = corsHeaders(origin.echo);
+  if (!origin.allowed) return new Response('Forbidden', { status: 403, headers: cors });
+  if (params.id !== GIST) return new Response('Not found', { status: 404, headers: cors });
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+  if (!['GET', 'PATCH'].includes(request.method)) return new Response('Method not allowed', { status: 405, headers: cors });
+  const token = env && (env.GIST_TOKEN || env.GITHUB_TOKEN);
+  if (!token) return new Response(JSON.stringify({ error: 'Cloud sync credentials are not configured' }), { status: 503, headers: { ...cors, 'Content-Type': 'application/json' } });
   const ctl = new AbortController();
-  const timer = setTimeout(()=>ctl.abort(),90000);
+  const timer = setTimeout(() => ctl.abort(), 90000);
   try {
     let body;
     if (request.method === 'PATCH') {
-      if (Number(request.headers.get('Content-Length') || 0) > LIMIT) return new Response('Too large',{status:413,headers:cors});
+      if (Number(request.headers.get('Content-Length') || 0) > LIMIT) return new Response('Too large', { status: 413, headers: cors });
       body = await request.text();
-      if (new TextEncoder().encode(body).length > LIMIT) return new Response('Too large',{status:413,headers:cors});
+      if (new TextEncoder().encode(body).length > LIMIT) return new Response('Too large', { status: 413, headers: cors });
     }
     const upstream = await fetch('https://api.github.com/gists/' + GIST, {
-      method:request.method, signal:ctl.signal,
-      headers: {Authorization:'Bearer '+token,Accept:'application/vnd.github+json','Content-Type':'application/json','User-Agent':'banwei-workbench-sync'}, body
+      method: request.method, signal: ctl.signal,
+      headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'banwei-workbench-sync' }, body
     });
-    if (!upstream.ok || request.method !== 'GET') return new Response(upstream.body,{status:upstream.status,headers:{...cors,'Content-Type':'application/json'}});
+    if (!upstream.ok || request.method !== 'GET') return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
     const gist = await upstream.json();
     for (const file of Object.values(gist.files || {})) {
       if (!file.truncated) continue;
       const raw = new URL(file.raw_url);
       if (raw.protocol !== 'https:' || raw.hostname !== 'gist.githubusercontent.com') throw new Error('Unexpected raw host');
-      const full = await fetch(raw.href,{signal:ctl.signal});
+      const full = await fetch(raw.href, { signal: ctl.signal });
       if (!full.ok) throw new Error('Raw download failed');
       if (Number(full.headers.get('Content-Length') || 0) > LIMIT) throw new Error('Raw file too large');
       file.content = await full.text();
@@ -40,14 +65,14 @@ export async function onRequest({request, params, env}) {
     if (requestedFile && gist.files && gist.files['data.json'] && typeof gist.files['data.json'].content === 'string') {
       const data = JSON.parse(gist.files['data.json'].content);
       const file = (data._files || []).find(item => item && item.id === requestedFile);
-      if (!file) return new Response(JSON.stringify({error:'file not found'}), {status:404, headers:{...cors,'Content-Type':'application/json'}});
+      if (!file) return new Response(JSON.stringify({ error: 'file not found' }), { status: 404, headers: { ...cors, 'Content-Type': 'application/json' } });
       const chunks = data._fileChunks || {};
       let content = typeof file.content === 'string' ? file.content : '';
       if (!content && file.contentChunkCount) {
         for (let i = 0; i < file.contentChunkCount; i++) content += chunks[file.id + '|' + i] || '';
       }
-      if (!content || (file.contentLength && content.length !== file.contentLength)) return new Response(JSON.stringify({error:'file content incomplete'}), {status:502, headers:{...cors,'Content-Type':'application/json'}});
-      return new Response(JSON.stringify({id:file.id, content}), {headers:{...cors,'Content-Type':'application/json; charset=utf-8'}});
+      if (!content || (file.contentLength && content.length !== file.contentLength)) return new Response(JSON.stringify({ error: 'file content incomplete' }), { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ id: file.id, content }), { headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
     }
     if (requestUrl.searchParams.get('meta') === '1') {
       const dataFile = gist.files && gist.files['data.json'];
@@ -65,7 +90,8 @@ export async function onRequest({request, params, env}) {
         dataFile.content = JSON.stringify(data);
       }
     }
-    return new Response(JSON.stringify(gist),{headers:{...cors,'Content-Type':'application/json; charset=utf-8'}});
-  } catch { return new Response(JSON.stringify({error:'Upstream unavailable; local data preserved'}),{status:502,headers:{...cors,'Content-Type':'application/json'}}); }
-  finally { clearTimeout(timer); }
+    return new Response(JSON.stringify(gist), { headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'Upstream unavailable; local data preserved' }), { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
+  } finally { clearTimeout(timer); }
 }
