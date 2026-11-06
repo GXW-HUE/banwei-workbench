@@ -495,6 +495,26 @@
   "absence": [],
   "_files": [
     {
+      "name": "跨端同步验证_20261106.txt",
+      "module": "weekly",
+      "moduleTitle": "周分析",
+      "type": "txt",
+      "label": "文本",
+      "icon": "📄",
+      "recordCount": 0,
+      "isAttachment": true,
+      "mimeType": "text/plain",
+      "size": 3033,
+      "id": "file_1793969683713_7g4wgu",
+      "createdAt": "2026-11-06T12:54:43.713Z",
+      "hasContent": true,
+      "contentChars": 3033,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 3033,
+      "cloudLimited": false
+    },
+    {
       "name": "【10月】【10月】25级-机电学院10月学生请假 数据子类表.xlsx",
       "module": "leave",
       "moduleTitle": "学生请假",
