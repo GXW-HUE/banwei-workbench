@@ -707,8 +707,9 @@ const Store = {
           try { localStorage.setItem(this.PREFIX + '_files_sig', filesSig); } catch (e) {}
           this.CLOUD._needContentUpload = false;
         }
-        // v63 增量附件：每个新附件单独一个 gist 小文件（c_<id>.json），一次 PATCH 可带多个。
-        // 上传一个 30KB 的新文件只需 30KB 流量，不用再背 10MB 整包（此前实测 30 秒）。
+        // v63 增量附件：每个新附件单独一个 gist 小文件（c_<id>.json）。
+        // v65 把最后一批附件和 index.json 合并成一次 PATCH：省一次往返（实测每省一次约 3-5 秒）。
+        let gistOk = false;
         if (pendingExt.length) {
           const batches = [];
           let cur = {}, size = 0;
@@ -719,29 +720,38 @@ const Store = {
             size += payload.length;
           });
           if (Object.keys(cur).length) batches.push(cur);
-          for (let bi = 0; bi < batches.length; bi++) {
+          for (let bi = 0; bi < batches.length - 1; bi++) {
             const ok = await pushFiles(batches[bi], '附件正文批次' + (bi + 1));
             if (!ok) throw new Error('附件正文分文件上传失败，暂不推送索引');
           }
-          if (!this.CLOUD._cloudExtIds) this.CLOUD._cloudExtIds = new Set();
-          pendingExt.forEach(p => this.CLOUD._cloudExtIds.add(p.id));
-          if (!this.CLOUD._cloudKnownIds) this.CLOUD._cloudKnownIds = new Set();
-          pendingExt.forEach(p => this.CLOUD._cloudKnownIds.add(p.id));
+          batches[batches.length - 1]['index.json'] = { content: indexContent };
+          gistOk = await pushFiles(batches[batches.length - 1], '附件正文+索引');
+          if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
+          else {
+            this.CLOUD._canReachCloud = true;
+            if (!this.CLOUD._cloudExtIds) this.CLOUD._cloudExtIds = new Set();
+            pendingExt.forEach(p => this.CLOUD._cloudExtIds.add(p.id));
+            if (!this.CLOUD._cloudKnownIds) this.CLOUD._cloudKnownIds = new Set();
+            pendingExt.forEach(p => this.CLOUD._cloudKnownIds.add(p.id));
+          }
+        } else {
+          gistOk = await pushOneFile('index.json', indexContent);
+          if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
+          else this.CLOUD._canReachCloud = true;
         }
-        const gistOk = await pushOneFile('index.json', indexContent);
-        if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
-        else this.CLOUD._canReachCloud = true;
         this.CLOUD.lastPushTime = Date.now();
         this.CLOUD.lastSyncTime = new Date().toISOString();
         // 2) 写 Pages 镜像（仓库）：手机等连不上 GitHub 的设备从此处读取“完整单文件数据”（含文件内容）。
         //    电脑/手机最终都读这一份，确保双端永远一致。
         let mirrorOk = false;
-        try {
-          await this._pushRepoMirror(indexContent);
-          mirrorOk = true;
+        // v65：镜像只是 GH Pages 的备用读通道，不再阻塞同步完成（每次写仓库要 3-4 秒）。
+        // 主通道成功时后台补写；主通道失败时才等镜像结果来判断这一轮是否算成功。
+        const mirrorOp = this._pushRepoMirror(indexContent).then(() => {
           this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
           this.CLOUD._canReachCloud = true;
-        } catch (e) { console.warn('镜像提交失败，保留待同步状态:', e); }
+          return true;
+        }).catch(e => { console.warn('镜像提交失败，保留待同步状态:', e); return false; });
+        if (!gistOk) { try { mirrorOk = await mirrorOp; } catch (e) {} }
         // Gist/Worker 是主同步通道，Pages 只是手机端的备用镜像。
         // 主通道成功即可确认数据已到云端；镜像失败留给后台轮询补推，
         // 避免因 GitHub Pages 提交短暂冲突把已经成功的上传误报为失败。
