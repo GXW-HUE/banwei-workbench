@@ -292,6 +292,10 @@ const Store = {
     const ts = Date.now();
     const mirrorBase = 'https://gxw-hue.github.io/banwei-workbench/sync/';
     return [
+      // 轻量索引（几十 KB，记录 + 文件元数据）：手机先拿到它就能秒开、编辑也能秒推。
+      // 附件正文占云端 99%，不再随每次改动搬运。
+      { name: 'index', url: this.CLOUD.workerBase + this.CLOUD.gistId + '?index=1', api: false, index: true, headers: {} },
+      { name: 'index-mirror', url: mirrorBase + 'index.json?t=' + ts, api: false, index: true, headers: {} },
       { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId + '?meta=1', api: true,
         headers: {} },
       { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
@@ -334,7 +338,15 @@ const Store = {
       const resp = await fetch(ch.url, { signal: ctl.signal, headers: _headers, cache: 'no-store' });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       let data;
-      if (ch.api) {
+      if (ch.index) {
+        // 轻量索引通道：几十 KB，直接是索引对象（也兼容包在 files['index.json'].content 里的形式）
+        const body = JSON.parse(await resp.text());
+        if (body && body.files && body.files['index.json'] && typeof body.files['index.json'].content === 'string') {
+          data = JSON.parse(body.files['index.json'].content);
+        } else {
+          data = body;
+        }
+      } else if (ch.api) {
         // api 通道：Gist API 返回 gist 对象 { files: { 'data.json': {content}, 'files_blob_0': {content}, ... } }
         const gist = JSON.parse(await resp.text());
         const dataFile = gist.files && gist.files['data.json'];
@@ -436,7 +448,7 @@ const Store = {
       const errors = [];
       const isComplete = (data) => {
         if (!data || !Array.isArray(data._files)) return false;
-        if (data._metaOnly) return true;
+        if (data._metaOnly || data._indexOnly) return true;
         const chunks = data._fileChunks || {};
         return data._files.every(file => {
           if (!file || file.cloudLimited || !file.hasContent) return !file || !file.cloudLimited;
@@ -526,9 +538,25 @@ const Store = {
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const result = await resp.json().catch(() => null);
-        const expected = body && body.files && body.files['data.json'] && body.files['data.json'].content;
-        const returned = result && result.files && result.files['data.json'] && result.files['data.json'].content;
-        if (expected && typeof returned === 'string' && returned.length < expected.length) throw new Error('Gist returned truncated data');
+        // 校验每个上传的文件确实落库。
+        // 注意：GitHub 对 >1MB 的文件在 PATCH 响应里只回前 1MB（truncated:true），
+        // 旧代码拿 content.length 直接比对，大包必然判为“截断”从而永远重试失败——
+        // 这是 10MB 数据长期推不上 Gist、只能退回镜像的根因之一。
+        // 现在 truncated 时改用响应里的 size（字节数）校验，UTF-8 下 size 必然 >= 字符数。
+        if (body && body.files && result && result.files) {
+          for (const name of Object.keys(body.files)) {
+            const sent = body.files[name] && body.files[name].content;
+            const got = result.files[name];
+            if (typeof sent !== 'string' || !got) continue;
+            if (got.truncated) {
+              const size = Number(got.size) || 0;
+              if (size > 0 && size < sent.length) throw new Error('Gist stored suspiciously small file: ' + name);
+              continue;
+            }
+            const back = typeof got.content === 'string' ? got.content : '';
+            if (back && back.length < sent.length) throw new Error('Gist returned truncated data: ' + name);
+          }
+        }
         return true;
       } catch (e) { lastError = e; }
       finally { clearTimeout(timer); }
@@ -603,26 +631,47 @@ const Store = {
           if (!persisted || this.CLOUD._filePersistFailed) throw new Error('文件内容尚未可靠保存，拒绝标记同步成功');
         }
         try { await this._refreshContentCache(); } catch (e) {}
-        const expectedFiles = await this._hydrateFilesForPush(this.getFiles());
-        const allData = this._safeCollectAllData();
-        if (!this._validateCloudFilePayload(allData.data, expectedFiles)) throw new Error('本机文件内容不完整，拒绝上传');
+        let allData = this._safeCollectAllData();
         allData.data.lastModified = new Date().toISOString();
         this._setLocalModified(allData.data.lastModified);
-        const fullContent = JSON.stringify(allData.data, null, 2);
-        // 1) 写 Gist（直连、即时、桌面可读）。单文件方案下整包含文件内容；
-        //    若总体积超过 Gist 单文件 ~1MB 限制（HTTP 422），则裁剪文件内容后重试，内容以镜像为准。
-        const buildGistBody = (content) => ({ files: { 'data.json': { content } } });
-        let gistOk = false, lastErr = null;
-        for (let attempt = 0; attempt < 5 && !gistOk; attempt++) {
+        // 附件集合没变时不再重传 10MB 的 data.json，只推几十 KB 的 index.json——
+        // 手机改一条记录也能几秒内同步成功（此前每次编辑都要背全量附件，弱网必失败）。
+        // data.json 仍保持完整格式，老设备/旧缓存读取不受影响。
+        const filesSig = this._filesSignature(allData.data._files);
+        const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
+        let needFull = !lastSig || lastSig !== filesSig;
+        if (needFull) {
           try {
-            await this._pushOnce(buildGistBody(fullContent));
-            gistOk = true;
+            // 只有在确实要重传附件时才去补正文（会下载完整云端包，手机上很贵）
+            const expectedFiles = await this._hydrateFilesForPush(this.getFiles());
+            allData = this._safeCollectAllData();
+            allData.data.lastModified = new Date().toISOString();
+            if (!this._validateCloudFilePayload(allData.data, expectedFiles)) needFull = false;
           } catch (e) {
-            lastErr = e;
-            console.warn('Gist 推送第 ' + (attempt + 1) + ' 次失败:', e);
-            if (!gistOk && attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
+            console.warn('附件正文不可用，本轮只同步索引:', e);
+            needFull = false;
           }
         }
+        const fullContent = JSON.stringify(allData.data, null, 2);
+        const indexContent = JSON.stringify(allData.indexData, null, 2);
+        let lastErr = null;
+        const pushOneFile = async (name, content) => {
+          for (let attempt = 0; attempt < 5; attempt++) {
+            try { await this._pushOnce({ files: { [name]: { content } } }); return true; } catch (e) {
+              lastErr = e;
+              console.warn('Gist 推送 ' + name + ' 第 ' + (attempt + 1) + ' 次失败:', e);
+              if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
+            }
+          }
+          return false;
+        };
+        // 先传附件正文（大），再传索引，保证任何设备读到索引时正文已就绪
+        if (needFull) {
+          const okFull = await pushOneFile('data.json', fullContent);
+          if (!okFull) console.warn('附件正文上传失败，本轮先同步记录索引:', lastErr);
+          else { try { localStorage.setItem(this.PREFIX + '_files_sig', filesSig); } catch (e) {} }
+        }
+        const gistOk = await pushOneFile('index.json', indexContent);
         if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
         else this.CLOUD._canReachCloud = true;
         this.CLOUD.lastPushTime = Date.now();
@@ -631,7 +680,7 @@ const Store = {
         //    电脑/手机最终都读这一份，确保双端永远一致。
         let mirrorOk = false;
         try {
-          await this._pushRepoMirror(fullContent);
+          await this._pushRepoMirror(indexContent);
           mirrorOk = true;
           this.CLOUD._lastMirrorModified = Date.parse(allData.data.lastModified) || Date.now();
           this.CLOUD._canReachCloud = true;
@@ -706,7 +755,7 @@ const Store = {
     if (modified <= lastM) return;                   // 镜像已是最新，无需推送
     this.CLOUD._mirrorPushing = true;
     try {
-      await this._pushRepoMirror(JSON.stringify(all.data, null, 2));
+      await this._pushRepoMirror(JSON.stringify(all.indexData, null, 2));
       this.CLOUD._lastMirrorModified = modified;
     } catch (e) {
       console.warn('镜像补推失败(忽略):', e);
@@ -910,7 +959,32 @@ const Store = {
     data._fileChunks = chunks;
     // 整包（含文件内容）只落一个 data.json，彻底消除分片与双主漂移。
     const filesPayload = { 'data.json': JSON.stringify(data, null, 2) };
-    return { data, filesPayload };
+    const indexData = this._buildIndexPayload(data);
+    const indexPayload = { 'index.json': JSON.stringify(indexData, null, 2) };
+    return { data, filesPayload, indexPayload, indexData };
+  },
+
+  // 轻量索引：只含模块记录 + 文件元数据，不含任何附件正文。
+  // 记录本体只有几十 KB，附件正文却占云端 99%；拆开后手机改一条记录只推索引，
+  // 不必每次背 10MB 附件。data.json 保持完整不变，老设备/旧缓存依然能读，向后兼容。
+  _buildIndexPayload(data) {
+    const out = { version: data.version };
+    Object.keys(MODULE_CONFIG).forEach(m => { if (data[m] !== undefined) out[m] = data[m]; });
+    out._files = (data._files || []).map(f => {
+      if (!f) return f;
+      const c = Object.assign({}, f);
+      delete c.content;
+      return c;
+    });
+    out._deleted = data._deleted;
+    out.lastModified = data.lastModified;
+    out._indexOnly = true;
+    return out;
+  },
+
+  // 附件集合指纹：只有附件增删/长度变化时才需要重传完整的 data.json
+  _filesSignature(files) {
+    return (files || []).map(f => f && (f.id + ':' + (Number(f.contentLength) || 0) + ':' + (Number(f.contentChunkCount) || 0))).sort().join('|');
   },
 
   _validateCloudFilePayload(cloudData, expectedFiles) {
