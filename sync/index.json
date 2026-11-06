@@ -482,26 +482,6 @@
   "absence": [],
   "_files": [
     {
-      "name": "自测v66f.docx",
-      "module": "files",
-      "moduleTitle": "文件中心",
-      "type": "word",
-      "label": "Word 文档",
-      "icon": "📄",
-      "isAttachment": true,
-      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 29128,
-      "id": "file_1793980882603_kr0dlb",
-      "createdAt": "2026-11-06T16:01:22.603Z",
-      "hasContent": true,
-      "contentChars": 29128,
-      "contentChunks": true,
-      "contentChunkCount": 1,
-      "contentLength": 29128,
-      "cloudLimited": false,
-      "contentIn": "file"
-    },
-    {
       "name": "【10月】【10月】25级-机电学院10月学生请假 数据子类表.xlsx",
       "module": "leave",
       "moduleTitle": "学生请假",
@@ -1631,7 +1611,8 @@
       "file_1793979672943_nval9r": 1793980004427,
       "file_1793980380560_wwzus9": 1793980389452,
       "file_1793980433745_n3d7kb": 1793980444190,
-      "file_1793980842578_vamtdn": 1793980848649
+      "file_1793980842578_vamtdn": 1793980848649,
+      "file_1793980882603_kr0dlb": 1793980896689
     },
     "weekly": {
       "imp_1791692931352_3hrkg6": 1791719205389,
