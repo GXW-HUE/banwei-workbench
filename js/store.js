@@ -898,15 +898,17 @@ const Store = {
     applyResult(result);
     // 云端确认为空（全新班级）或拉取成功：首拉阶段结束，允许后续推送
     if (result.success && !result.hasData) this._markMerged();
-    // 自愈：本机曾上传过附件，但当前附件指纹与“上次成功整包推送”的指纹不一致 →
+    // 自愈：本机曾成功整包推送过附件（有 _files_sig），但当前附件指纹与它不一致 →
     // 说明云端的 data.json 缺正文（历史上索引先于正文写入造成），立即补推一次整包。
     try {
-      if (!this.CLOUD._sigCheckedAt && localStorage.getItem(this.PREFIX + '_has_local_content') === '1') {
+      const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
+      if (!this.CLOUD._sigCheckedAt && this._idbOk) {
         this.CLOUD._sigCheckedAt = Date.now();
         await this._refreshContentCache();
+        const cachedCount = Object.keys(this._contentCache || {}).length;
         const sig = this._filesSignature(this.getFiles());
-        const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
-        if (sig && lastSig && sig !== lastSig) this._setDirty();
+        // 本机确实存着多份附件正文，且指纹与上次成功整包推送不一致（含从未记录签名）→ 补推整包
+        if (cachedCount >= 5 && sig && (!lastSig || sig !== lastSig)) this._setDirty();
       }
     } catch (e) {}
     if (this.CLOUD.dirty) this.pushToCloud();
