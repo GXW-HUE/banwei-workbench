@@ -67,7 +67,8 @@ export async function onRequest({ request, env }) {
     const parentCommit = await api(`commits/${parent}`);
     const baseTree = parentCommit && parentCommit.tree && parentCommit.tree.sha;
     if (!baseTree) throw new Error('Git base tree unavailable');
-    const entries = [{ path: 'sync/data.json', mode: '100644', type: 'blob', content: payload.content }];
+    const target = payload.name === 'index.json' ? 'sync/index.json' : 'sync/data.json';
+    const entries = [{ path: target, mode: '100644', type: 'blob', content: payload.content }];
     const existing = await api(`trees/${baseTree}?recursive=1`);
     (existing.tree || []).forEach(item => {
       if (item.path && item.path.startsWith('sync/files_blob')) {
