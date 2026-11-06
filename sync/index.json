@@ -1420,26 +1420,6 @@
       "contentChunks": true,
       "contentChunkCount": 1,
       "contentLength": 18052
-    },
-    {
-      "name": "自测上传.docx",
-      "module": "weekly",
-      "moduleTitle": "周分析",
-      "type": "word",
-      "label": "Word",
-      "icon": "📝",
-      "recordCount": 0,
-      "isAttachment": true,
-      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 21846,
-      "id": "file_1793977232524_my0b6t",
-      "createdAt": "2026-11-06T15:00:32.524Z",
-      "hasContent": true,
-      "contentChars": 29128,
-      "cloudLimited": false,
-      "contentChunks": true,
-      "contentChunkCount": 1,
-      "contentLength": 29128
     }
   ],
   "_deleted": {
@@ -1577,7 +1557,8 @@
       "file_1793593629074_x1o533": 1793851268403,
       "file_1793969683713_7g4wgu": 1793970421097,
       "file_1793968764131_7j5uzv": 1793972091548,
-      "file_1793961127068_ltuck9": 1793972095268
+      "file_1793961127068_ltuck9": 1793972095268,
+      "file_1793977232524_my0b6t": 1793977278251
     },
     "weekly": {
       "imp_1791692931352_3hrkg6": 1791719205389,
