@@ -79,7 +79,14 @@ export async function onRequest({ request, params, env }) {
       method: request.method, signal: ctl.signal,
       headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'banwei-workbench-sync' }, body
     });
-    if (!upstream.ok || request.method !== 'GET') return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+    // v64：写成功只回 {ok:true}。GitHub 的 PATCH 响应会把整个 gist（含 10MB data.json）回传，
+    // 客户端每次等这个几 MB 的大包要花 3-5 秒；小改动（几十 KB）没必要拿回大包。
+    // 超过 2MB 的整包写入仍回原始响应，让前端做“存储是否被截断”校验。
+    if (!upstream.ok) return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+    if (request.method !== 'GET') {
+      if ((body || '').length <= 2 * 1024 * 1024) return new Response(JSON.stringify({ ok: true }), { headers: jsonCors });
+      return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+    }
     const gist = await upstream.json();
     for (const file of Object.values(gist.files || {})) {
       if (!file.truncated) continue;
