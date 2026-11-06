@@ -638,7 +638,9 @@ const Store = {
         // data.json 仍保持完整格式，老设备/旧缓存读取不受影响。
         const filesSig = this._filesSignature(allData.data._files);
         const lastSig = localStorage.getItem(this.PREFIX + '_files_sig') || '';
-        let needFull = !lastSig || lastSig !== filesSig;
+        // 只有本机真的持有附件正文时才需要整包上传；手机等只有元数据的设备只推索引
+        const localHasChunks = Object.keys(allData.data._fileChunks || {}).length > 0;
+        let needFull = localHasChunks && (!lastSig || lastSig !== filesSig);
         if (needFull) {
           try {
             // 只有在确实要重传附件时才去补正文（会下载完整云端包，手机上很贵）
