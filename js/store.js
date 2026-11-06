@@ -899,11 +899,12 @@ const Store = {
     setInterval(() => {
       if (this.CLOUD.dirty && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight && !document.hidden) this.pushToCloud();
     }, 10000);
-    // 页面开着时每 5s 自动检查其他设备的新数据（只拉轻量索引，约 1-2 秒），
+    // 页面开着时每 3s 自动检查其他设备的新数据（只拉轻量索引，约 1-2 秒），
     // 配合“数据没变就不重绘”，做到别的设备一上传这里几秒内自动刷新。
+    // v66：索引改走仓库 Contents API（不再受 GitHub raw 几分钟缓存影响），3 秒轮询即可秒级感知。
     setInterval(() => {
       if (!document.hidden && !this.CLOUD.isSyncing && !this.CLOUD.pushInFlight) this._foregroundSync();
-    }, 5000);
+    }, 3000);
     // 定时把数据镜像推到网站（手机等连不上 GitHub 的设备靠它同步），保证镜像始终接近实时
     setInterval(() => {
       if (document.hidden) return;
@@ -928,7 +929,7 @@ const Store = {
     const now = Date.now();
     // 注意：_lastPullAt 是给面板显示的 ISO 字符串，不能拿来做数值间隔判断，
     // 否则 now - '2026-...' 得到 NaN，节流形同虚设。
-    if (this.CLOUD._lastForegroundAt && now - this.CLOUD._lastForegroundAt < 3000) return;
+    if (this.CLOUD._lastForegroundAt && now - this.CLOUD._lastForegroundAt < 2000) return;
     this.CLOUD._lastForegroundAt = now;
     // 云端快照指纹：用于“只在数据真的变了才重绘”，避免每轮轮询都把页面重绘一次
     const digest = (d) => {
