@@ -1467,26 +1467,6 @@
       "contentChunkCount": 1,
       "contentLength": 18052,
       "contentIn": "data"
-    },
-    {
-      "name": "自测v66x.docx",
-      "module": "files",
-      "moduleTitle": "文件中心",
-      "type": "word",
-      "label": "Word 文档",
-      "icon": "📄",
-      "isAttachment": true,
-      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 29128,
-      "id": "file_1793980842578_vamtdn",
-      "createdAt": "2026-11-06T16:00:42.579Z",
-      "hasContent": true,
-      "contentChars": 29128,
-      "cloudLimited": false,
-      "contentChunks": true,
-      "contentChunkCount": 1,
-      "contentLength": 29128,
-      "contentIn": "file"
     }
   ],
   "_deleted": {
@@ -1630,7 +1610,8 @@
       "file_1793979974402_weeavp": 1793979977604,
       "file_1793979672943_nval9r": 1793980004427,
       "file_1793980380560_wwzus9": 1793980389452,
-      "file_1793980433745_n3d7kb": 1793980444190
+      "file_1793980433745_n3d7kb": 1793980444190,
+      "file_1793980842578_vamtdn": 1793980848649
     },
     "weekly": {
       "imp_1791692931352_3hrkg6": 1791719205389,
