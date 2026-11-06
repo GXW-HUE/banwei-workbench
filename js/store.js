@@ -648,7 +648,21 @@ const Store = {
         // 新设备上该记录为空 → 任何一次记录编辑都被判定“附件变了”，白传 10MB（实测 55 秒）。
         const cloudSig = this.CLOUD._cloudFilesSig || '';
         const sigChanged = !cloudSig || cloudSig !== filesSig;
-        let needFull = localHasContent && (sigChanged || this.CLOUD._needContentUpload);
+        // v63：新增附件不再整包重传 data.json，而是把正文单独放进 gist 的小文件 c_<id>.json。
+        // 一个 30KB 的新文件只需推 30KB，而不是背 10MB 的整包。
+        const cloudKnown = this.CLOUD._cloudKnownIds || new Set();
+        const cloudExt = this.CLOUD._cloudExtIds || new Set();
+        const pendingExt = [];
+        if (this.CLOUD.cloudChecked) {
+          (this.getFiles() || []).forEach(f => {
+            if (!f || !f.id || !f.hasContent || f.cloudLimited) return;
+            if (cloudExt.has(f.id) || cloudKnown.has(f.id)) return;
+            const cached = this._contentCache ? this._contentCache[f.id] : null;
+            if (typeof cached === 'string' && cached.length) pendingExt.push({ id: f.id, content: cached });
+          });
+        }
+        // 只有“云端整包都需要修”的旧场景（_needContentUpload）才整包重传；正常路径永不整包。
+        let needFull = !!this.CLOUD._needContentUpload && localHasContent;
         let fullReady = !needFull;
         if (needFull) {
           try {
@@ -664,18 +678,24 @@ const Store = {
           }
         }
         const fullContent = JSON.stringify(allData.data, null, 2);
+        // 新上传的附件在索引里标记 contentIn='file'，让其它设备知道正文在小文件里
+        if (pendingExt.length) {
+          const ids = new Set(pendingExt.map(p => p.id));
+          (allData.indexData._files || []).forEach(f => { if (f && ids.has(f.id)) f.contentIn = 'file'; });
+        }
         const indexContent = JSON.stringify(allData.indexData, null, 2);
         let lastErr = null;
-        const pushOneFile = async (name, content) => {
+        const pushFiles = async (filesObj, label) => {
           for (let attempt = 0; attempt < 5; attempt++) {
-            try { await this._pushOnce({ files: { [name]: { content } } }); return true; } catch (e) {
+            try { await this._pushOnce({ files: filesObj }); return true; } catch (e) {
               lastErr = e;
-              console.warn('Gist 推送 ' + name + ' 第 ' + (attempt + 1) + ' 次失败:', e);
+              console.warn('Gist 推送 ' + label + ' 第 ' + (attempt + 1) + ' 次失败:', e);
               if (attempt < 4) await this._sleep(1000 * Math.pow(2, attempt));
             }
           }
           return false;
         };
+        const pushOneFile = (name, content) => pushFiles({ [name]: { content } }, name);
         // 先传附件正文（大），再传索引，保证任何设备读到索引时正文已就绪。
         // 正文没准备好/上传失败时绝不写索引：索引领先于正文 = 其他设备看到“有记录、没内容”。
         if (needFull && !fullReady) {
@@ -686,6 +706,27 @@ const Store = {
           if (!okFull) throw new Error('附件正文上传失败，暂不推送索引');
           try { localStorage.setItem(this.PREFIX + '_files_sig', filesSig); } catch (e) {}
           this.CLOUD._needContentUpload = false;
+        }
+        // v63 增量附件：每个新附件单独一个 gist 小文件（c_<id>.json），一次 PATCH 可带多个。
+        // 上传一个 30KB 的新文件只需 30KB 流量，不用再背 10MB 整包（此前实测 30 秒）。
+        if (pendingExt.length) {
+          const batches = [];
+          let cur = {}, size = 0;
+          pendingExt.forEach(item => {
+            const payload = JSON.stringify({ id: item.id, content: item.content, length: item.content.length });
+            if (size + payload.length > 3145728 && Object.keys(cur).length) { batches.push(cur); cur = {}; size = 0; }
+            cur['c_' + item.id + '.json'] = { content: payload };
+            size += payload.length;
+          });
+          if (Object.keys(cur).length) batches.push(cur);
+          for (let bi = 0; bi < batches.length; bi++) {
+            const ok = await pushFiles(batches[bi], '附件正文批次' + (bi + 1));
+            if (!ok) throw new Error('附件正文分文件上传失败，暂不推送索引');
+          }
+          if (!this.CLOUD._cloudExtIds) this.CLOUD._cloudExtIds = new Set();
+          pendingExt.forEach(p => this.CLOUD._cloudExtIds.add(p.id));
+          if (!this.CLOUD._cloudKnownIds) this.CLOUD._cloudKnownIds = new Set();
+          pendingExt.forEach(p => this.CLOUD._cloudKnownIds.add(p.id));
         }
         const gistOk = await pushOneFile('index.json', indexContent);
         if (!gistOk) console.warn('Gist 推送最终失败（镜像仍会同步）:', lastErr);
@@ -1027,6 +1068,9 @@ const Store = {
       if (!f) return f;
       const c = Object.assign({}, f);
       delete c.content;
+      // 标明正文放在哪：独立小文件（file）还是历史整包（data），供其它设备/推送逻辑判断
+      if (this.CLOUD._cloudExtIds && this.CLOUD._cloudExtIds.has(c.id)) c.contentIn = 'file';
+      else if (!c.contentIn && this.CLOUD._cloudKnownIds && this.CLOUD._cloudKnownIds.has(c.id)) c.contentIn = 'data';
       return c;
     });
     out._deleted = data._deleted;
@@ -1180,6 +1224,15 @@ const Store = {
     // 记录“云端当前的附件集合指纹”：推送时以它为准判断是否需要重传完整 data.json，
     // 避免新设备（本机没有上次推送记录）把一次记录编辑也变成 10MB 整包上传。
     try { this.CLOUD._cloudFilesSig = this._filesSignature(cloudData._files); } catch (e) {}
+    // 记录云端附件正文的存放位置：
+    //   · contentIn === 'file' → 正文在本 gist 的独立小文件 c_<id>.json（v63 起，新增附件只传自己那几百 KB）
+    //   · contentIn === 'data' 或未知 → 正文在 10MB 的 data.json 里（历史文件，保持不动）
+    // 推送时据此判断“哪些附件的正文云端已有”，避免为了一个新文件重传整包。
+    try {
+      const list = Array.isArray(cloudData._files) ? cloudData._files : [];
+      this.CLOUD._cloudExtIds = new Set(list.filter(f => f && f.contentIn === 'file').map(f => f.id));
+      this.CLOUD._cloudKnownIds = new Set(list.map(f => f && f.id).filter(Boolean));
+    } catch (e) {}
     const cloudTs = cloudData.lastModified ? Date.parse(cloudData.lastModified) : 0;
     const localTs = this._getLocalModified();
     const localData = this._collectAllData();
