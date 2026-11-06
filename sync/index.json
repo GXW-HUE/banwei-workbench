@@ -120,6 +120,18 @@
       "sourceFile": {
         "fileId": "file_1793972098907_lq81m1"
       }
+    },
+    {
+      "weekNum": "自测周次",
+      "dateRange": "2026-11-06",
+      "study": "自动同步自测记录",
+      "discipline": "无",
+      "hygiene": "无",
+      "issues": "无",
+      "measures": "无",
+      "id": "id_1793974882974_2lzzjq",
+      "createdAt": "2026-11-06T14:21:22.974Z",
+      "updatedAt": "2026-11-06T14:21:22.974Z"
     }
   ],
   "monthly": [
