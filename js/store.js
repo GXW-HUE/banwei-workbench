@@ -1257,6 +1257,10 @@ const Store = {
     out._deleted = tombs;
     out.lastModified = cloudData.lastModified || new Date().toISOString();
     out._fileChunks = cloudData._fileChunks || {};   // 文件内容分块（单文件方案），供 _applyCloudData 还原
+    // 保留“本次云端数据是轻量索引”的标记：_applyCloudData 需要靠它跳过“云端缺正文”的自修复判断，
+    // 否则索引（无 _fileChunks、无 content）会被误判成“云端没有附件正文”→ 每次轮询都置
+    // _needContentUpload，下一次小改动又变成 10MB 整包重传（实测 55 秒）。
+    out._indexOnly = !!cloudData._indexOnly;
     this._applyCloudData(out);
     try { localStorage.setItem(this.SYNC_KEY, String(Date.now())); } catch (e) {}
     this._markMerged();
