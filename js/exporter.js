@@ -313,9 +313,35 @@ const Exporter = {
           .catch(err => { console.error('mammoth 提取失败:', err); this._renderHtmlPreviewError(); });
       };
       if (typeof docx !== 'undefined') {
-        docx.renderAsync(blob, document.getElementById('doc-preview-html'))
-          .then(() => this._finishHtmlPreview())
-          .catch(err => { console.warn('docx-preview 渲染失败，改用 mammoth 提取:', err); renderWithMammoth(); });
+        // docx-preview 在部分手机浏览器上会直接同步抛错或长时间不返回，
+        // 这里加同步捕获 + 15 秒看门狗：一旦没渲染出内容就自动退回 mammoth 提取 HTML，
+        // 避免预览页永远停在“正在加载文档预览...”。
+        let finished = false;
+        const fallbackOnce = () => {
+          if (finished) return;
+          finished = true;
+          const el = document.getElementById('doc-preview-html');
+          if (el && (el.innerHTML || '').length > 200) { this._finishHtmlPreview(); return; }
+          renderWithMammoth();
+        };
+        const watchdog = setTimeout(fallbackOnce, 15000);
+        try {
+          docx.renderAsync(blob, document.getElementById('doc-preview-html'))
+            .then(() => {
+              if (finished) return;
+              clearTimeout(watchdog);
+              const el = document.getElementById('doc-preview-html');
+              // 渲染成功但没产出内容（个别手机浏览器会“假成功”）：同样退回 mammoth
+              if (!el || (el.innerHTML || '').length < 200) { finished = true; renderWithMammoth(); return; }
+              finished = true;
+              this._finishHtmlPreview();
+            })
+            .catch(err => { clearTimeout(watchdog); console.warn('docx-preview 渲染失败，改用 mammoth 提取:', err); fallbackOnce(); });
+        } catch (err) {
+          clearTimeout(watchdog);
+          console.warn('docx-preview 同步异常，改用 mammoth 提取:', err);
+          fallbackOnce();
+        }
       } else {
         renderWithMammoth();
       }
@@ -402,7 +428,7 @@ const Exporter = {
       : all;
 
     // 兜底：没有 sourceFile 的记录，从文件中心查找同模块最新文件
-    const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && f.content);
+    const moduleFiles = Store.getFiles().filter(f => f.module === moduleId && (f.hasContent || f.content));
     const fallbackFileId = moduleFiles.length > 0 ? moduleFiles[0].id : null;
     const recordsWithSource = targets.map(r => {
       if (r.sourceFile) return r;
@@ -435,8 +461,13 @@ const Exporter = {
           continue;
         }
       } else if (record.sourceFile && record.sourceFile.fileId) {
-        const fileList = Store.getFiles();
-        const fileInfo = fileList.find(f => f.id === record.sourceFile.fileId);
+        let fileInfo = Store.getFiles().find(f => f.id === record.sourceFile.fileId);
+        if (!fileInfo) continue;
+        // 手机/新设备本机没有正文：先按需从云端补正文（旧实现只认 fileInfo.content，
+        // 于是手机“导出原文件”几乎全部被静默跳过，最后报“没有可下载的原始文件”）。
+        if (!(typeof fileInfo.content === 'string' && fileInfo.content.length) && fileInfo.hasContent !== false) {
+          try { fileInfo = await Store.loadFileContent(fileInfo.id); } catch (e) { fileInfo = null; }
+        }
         if (!fileInfo) continue;
         fileName = fileInfo.name;
         if (fileInfo.assetUrl) {
@@ -1831,10 +1862,16 @@ const Exporter = {
     const safeName = this._ensureExt(fileName, mime);
 
     if (ext === 'pdf') {
-      // PDF 直接在浏览器新标签页预览
-      const win = window.open(url, '_blank');
-      if (!win || win.closed || typeof win.closed === 'undefined') {
-        this.fallbackOpen(url, safeName);
+      // 手机端（安卓/微信内置浏览器）不带 download 属性打开 blob URL，
+      // 标题会变成一串 UUID（形如 0f3b0cc1-00e3-4ff6-8），用户以为“文件格式变了”。
+      // 移动端一律走带原文件名的下载；桌面端仍在新标签页预览。
+      if (this._isMobileLike()) {
+        this._forceDownload(url, safeName, 'PDF 已按原文件名下载，可用 WPS 打开查看');
+      } else {
+        const win = window.open(url, '_blank');
+        if (!win || win.closed || typeof win.closed === 'undefined') {
+          this._forceDownload(url, safeName, 'PDF 已按原文件名下载，可用 WPS 打开查看');
+        }
       }
     } else {
       // Office 文件（docx/xlsx/pptx）：直接以原文件名下载。
@@ -1910,13 +1947,38 @@ const Exporter = {
   },
 
   fallbackOpen(url, fileName) {
+    // 兜底打开：优先带 download 属性，保证下载后文件名不丢（弹窗被拦时也不至于变成 UUID）
     const a = document.createElement('a');
     a.href = url;
-    a.target = '_blank';
+    if (fileName) a.download = fileName; else a.target = '_blank';
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  },
+
+  // 是否手机/微信等内置浏览器（这些环境里 blob URL 新标签预览会丢文件名）
+  _isMobileLike() {
+    try {
+      const ua = navigator.userAgent || '';
+      if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile|MicroMessenger|QQBrowser|baiduboxapp/i.test(ua)) return true;
+      return window.innerWidth <= 820 && /touch/i.test(document.documentElement.className || '');
+    } catch (e) { return false; }
+  },
+
+  // 强制以原文件名下载（移动端 PDF/Office 兜底）
+  _forceDownload(url, fileName, toastMsg) {
+    const name = this._ensureExt(fileName, null);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    try { if (window.App && App.toast) App.toast(toastMsg || ('已开始下载：' + name), 'success'); } catch (e) {}
+    return name;
   },
 
   downloadFile(fileName, content, mimeType) {
