@@ -298,7 +298,6 @@ const Store = {
       { name: 'index-mirror', url: mirrorBase + 'index.json?t=' + ts, api: false, index: true, headers: {} },
       { name: 'worker', url: this.CLOUD.workerBase + this.CLOUD.gistId + '?meta=1', api: true,
         headers: {} },
-      { name: 'pages', url: mirrorBase + 'data.json?t=' + ts, api: false },
       { name: 'api',   url: this.CLOUD.apiBase + this.CLOUD.gistId, api: true,
         headers: { 'Accept': 'application/vnd.github.v3+json' } }
     ];
@@ -734,7 +733,7 @@ const Store = {
     const resp = await fetch(this.CLOUD.mirrorBase, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: dataContent }),
+      body: JSON.stringify({ content: dataContent, name: 'index.json' }),
       cache: 'no-store'
     });
     if (!resp.ok) throw new Error('Cloud mirror HTTP ' + resp.status);
