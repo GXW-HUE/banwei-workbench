@@ -85,6 +85,18 @@ export async function onRequest({ request, params, env }) {
       return new Response(JSON.stringify({ error: 'index not found' }), { status: 404, headers: { ...cors, 'Content-Type': 'application/json' } });
     }
     const requestedFile = requestUrl.searchParams.get('file');
+    if (requestedFile && gist.files) {
+      // v63：新增附件的正文放在独立小文件 c_<id>.json 里（上传只需几十 KB，不用背 10MB 整包）
+      const extFile = gist.files['c_' + requestedFile + '.json'];
+      if (extFile && typeof extFile.content === 'string' && extFile.content.length) {
+        try {
+          const payload = JSON.parse(extFile.content);
+          if (payload && typeof payload.content === 'string' && payload.content.length) {
+            return new Response(JSON.stringify({ id: requestedFile, content: payload.content }), { headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
+          }
+        } catch (e) {}
+      }
+    }
     if (requestedFile && gist.files && gist.files['data.json'] && typeof gist.files['data.json'].content === 'string') {
       const data = JSON.parse(gist.files['data.json'].content);
       const file = (data._files || []).find(item => item && item.id === requestedFile);
