@@ -25,7 +25,7 @@ function corsHeaders(echo) {
   return headers;
 }
 
-export async function onRequest({ request, params, env }) {
+export async function onRequest({ request, params, env, waitUntil }) {
   const origin = checkOrigin(request);
   const cors = corsHeaders(origin.echo);
   if (!origin.allowed) return new Response('Forbidden', { status: 403, headers: cors });
@@ -50,8 +50,53 @@ export async function onRequest({ request, params, env }) {
       return txt;
     } catch (e) { return null; }
   }
+  // v66：gist raw 在 GitHub CDN 上会缓存数分钟——刚推上去的改动，别的设备读 raw 还是旧内容，
+  // 表现就是“明明传上去了，另一边几分钟看不到”。仓库镜像（sync/index.json）走 Contents API
+  // 不走 CDN，实测 1.1 秒且永远是最新，所以索引优先读仓库，raw 只做兜底。
+  const REPO_INDEX = 'https://api.github.com/repos/GXW-HUE/banwei-workbench/contents/sync/index.json';
+  const ghHeaders = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'User-Agent': 'banwei-workbench-sync' };
+  function decodeB64(b64) {
+    const bin = atob((b64 || '').replace(/\n/g, ''));
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(arr);
+  }
+  async function repoIndex() {
+    try {
+      const r = await fetch(REPO_INDEX + '?ref=main&t=' + Date.now(), { headers: ghHeaders, signal: ctl.signal });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!j || !j.content) return null;
+      const txt = decodeB64(j.content);
+      if (!txt || txt.charAt(0) !== '{') return null;
+      return JSON.parse(txt) && txt;
+    } catch (e) { return null; }
+  }
+  async function mirrorIndex(text) {
+    try {
+      const enc = new TextEncoder().encode(text);
+      let bin = '';
+      for (let i = 0; i < enc.length; i += 8192) bin += String.fromCharCode.apply(null, enc.subarray(i, i + 8192));
+      const content = btoa(bin);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let sha = '';
+        const g = await fetch(REPO_INDEX + '?ref=main&t=' + Date.now(), { headers: ghHeaders, signal: ctl.signal });
+        if (g.ok) { const j = await g.json(); sha = j.sha || ''; }
+        const put = await fetch(REPO_INDEX, {
+          method: 'PUT', signal: ctl.signal,
+          headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: 'sync: index ' + new Date().toISOString(), content, sha, branch: 'main' })
+        });
+        if (put.ok) return true;
+        if (put.status !== 409 && put.status !== 422) return false;
+      }
+      return false;
+    } catch (e) { return false; }
+  }
   try {
     if (request.method === 'GET' && requestUrl.searchParams.get('index') === '1') {
+      const repo = await repoIndex();
+      if (repo) return new Response(repo, { headers: jsonCors });
       const fast = await fastRaw('index.json');
       if (fast) return new Response(fast, { headers: jsonCors });
     }
@@ -84,7 +129,20 @@ export async function onRequest({ request, params, env }) {
     // 超过 2MB 的整包写入仍回原始响应，让前端做“存储是否被截断”校验。
     if (!upstream.ok) return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
     if (request.method !== 'GET') {
-      if ((body || '').length <= 2 * 1024 * 1024) return new Response(JSON.stringify({ ok: true }), { headers: jsonCors });
+      if ((body || '').length <= 2 * 1024 * 1024) {
+        // v66：写成功后立刻把索引同步到仓库镜像（后台执行，不拖慢推送），
+        // 这样别的设备读索引走 Contents API 就能马上看到最新内容。
+        let idxContent = '';
+        try {
+          const parsed = JSON.parse(body);
+          idxContent = (parsed && parsed.files && parsed.files['index.json'] && parsed.files['index.json'].content) || '';
+        } catch (e) {}
+        if (typeof idxContent === 'string' && idxContent.length) {
+          const job = mirrorIndex(idxContent);
+          if (typeof waitUntil === 'function') waitUntil(job);
+        }
+        return new Response(JSON.stringify({ ok: true }), { headers: jsonCors });
+      }
       return new Response(upstream.body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json' } });
     }
     const gist = await upstream.json();
