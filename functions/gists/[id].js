@@ -61,6 +61,29 @@ export async function onRequest({ request, params, env }) {
       file.truncated = false;
     }
     const requestUrl = new URL(request.url);
+    // 轻量索引：只含记录与文件元数据（几十 KB），手机端秒开/秒推用。
+    // 优先读 gist 里的 index.json；首次迁移还没有时，从完整 data.json 现裁一份（兼容老数据）。
+    if (requestUrl.searchParams.get('index') === '1') {
+      const indexFile = gist.files && gist.files['index.json'];
+      if (indexFile && typeof indexFile.content === 'string') {
+        return new Response(indexFile.content, { headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
+      }
+      const dataFile = gist.files && gist.files['data.json'];
+      if (dataFile && typeof dataFile.content === 'string') {
+        const data = JSON.parse(dataFile.content);
+        data._fileChunks = {};
+        data._metaOnly = true;
+        if (Array.isArray(data._files)) {
+          data._files = data._files.map(file => {
+            const copy = Object.assign({}, file);
+            delete copy.content;
+            return copy;
+          });
+        }
+        return new Response(JSON.stringify(data), { headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
+      }
+      return new Response(JSON.stringify({ error: 'index not found' }), { status: 404, headers: { ...cors, 'Content-Type': 'application/json' } });
+    }
     const requestedFile = requestUrl.searchParams.get('file');
     if (requestedFile && gist.files && gist.files['data.json'] && typeof gist.files['data.json'].content === 'string') {
       const data = JSON.parse(gist.files['data.json'].content);
