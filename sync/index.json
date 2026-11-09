@@ -1467,6 +1467,27 @@
       "contentChunkCount": 1,
       "contentLength": 17680,
       "contentIn": "file"
+    },
+    {
+      "name": "【第四周】【第1周】第一周周末去留登记表.xlsx",
+      "module": "weekend",
+      "moduleTitle": "周末去向登记",
+      "type": "excel",
+      "label": "Excel",
+      "icon": "📊",
+      "recordCount": 0,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 16727,
+      "id": "file_1794192254990_8i4pjc",
+      "createdAt": "2026-11-09T02:44:14.990Z",
+      "hasContent": true,
+      "contentChars": 22304,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 22304,
+      "contentIn": "file"
     }
   ],
   "_deleted": {
