@@ -573,6 +573,17 @@
   "absence": [],
   "_files": [
     {
+      "name": "班委工作台_全部数据_20261112.xlsx",
+      "module": "all",
+      "moduleTitle": "全部模块",
+      "type": "excel",
+      "label": "Excel",
+      "icon": "📊",
+      "recordCount": -1,
+      "id": "file_1794482437056_7g9bh9",
+      "createdAt": "2026-11-12T11:20:37.056Z"
+    },
+    {
       "name": "9砺己肃规强作风 勤学笃行树班风）.docx",
       "module": "meeting",
       "moduleTitle": "主题班会",
