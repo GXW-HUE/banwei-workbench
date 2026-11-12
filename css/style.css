@@ -549,6 +549,37 @@ table.data-table tbody tr:last-child td {
   accent-color: var(--primary);
 }
 
+/* ===== 勾选列：固定宽度 + 整格可点（手机上 16px 小方框很难点中） ===== */
+table.data-table th.check-cell,
+table.data-table td.check-cell {
+  width: 46px;
+  min-width: 46px;
+  max-width: 46px;
+  padding: 6px 4px !important;
+  text-align: center;
+  overflow: visible;
+}
+
+.check-hit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 40px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+table.data-table th.check-cell input[type="checkbox"],
+table.data-table td.check-cell input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
 .data-table tbody tr.selected-row {
   background: var(--primary-bg);
 }
