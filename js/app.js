@@ -575,7 +575,7 @@ const App = {
     }
 
     // 渲染表头
-    const headHtml = `<tr><th style="width:40px;min-width:40px;max-width:40px;text-align:center;"><input type="checkbox" id="select-all-${moduleId}" onclick="App.toggleSelectAll('${moduleId}', this.checked)"></th>` + displayFields.map(f => `<th style="min-width:${f.width || 100}px;max-width:${f.width || 280}px">${f.label}</th>`).join('') + '<th style="width:120px;text-align:center;">操作</th></tr>';
+    const headHtml = `<tr><th class="check-cell" style="width:44px;min-width:44px;max-width:44px;text-align:center;"><label class="check-hit"><input type="checkbox" id="select-all-${moduleId}" onclick="App.toggleSelectAll('${moduleId}', this.checked)"></label></th>` + displayFields.map(f => `<th style="min-width:${f.width || 100}px;max-width:${f.width || 280}px">${f.label}</th>`).join('') + '<th style="width:120px;text-align:center;">操作</th></tr>';
     document.getElementById(`table-head-${moduleId}`).innerHTML = headHtml;
 
     // 渲染表体
@@ -589,7 +589,7 @@ const App = {
     filtered.forEach(record => {
       const checked = this.selectedRecords.has(record.id) ? 'checked' : '';
       bodyHtml += `<tr class="${checked ? 'selected-row' : ''}">`;
-      bodyHtml += `<td style="text-align:center;"><input type="checkbox" class="row-checkbox" data-id="${record.id}" ${checked} onclick="App.toggleSelectRow('${moduleId}', '${record.id}', this.checked)"></td>`;
+      bodyHtml += `<td class="check-cell" style="text-align:center;"><label class="check-hit"><input type="checkbox" class="row-checkbox" data-id="${record.id}" ${checked} onclick="App.toggleSelectRow('${moduleId}', '${record.id}', this.checked)"></label></td>`;
       displayFields.forEach(f => {
         let val = record[f.name];
         // 四进两联一交友：被谈话人字段清洗，只显示人名
