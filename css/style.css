@@ -570,6 +570,13 @@ table.data-table td.check-cell {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 文件列表行的勾选热区（周末去向 / 学生请假 / 学生缺勤） */
+.check-hit-file {
+  width: 40px;
+  min-height: 44px;
+  flex-shrink: 0;
+}
+
 table.data-table th.check-cell input[type="checkbox"],
 table.data-table td.check-cell input[type="checkbox"] {
   width: 20px;
