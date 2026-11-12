@@ -531,6 +531,234 @@ const Exporter = {
     }
   },
 
+  // ============================
+  //  文件型模块（周末去向 / 学生请假 / 学生缺勤）
+  //  这些模块的数据就是一个一个上传的 Excel，需要支持：
+  //   1) 导出汇总表：把本模块下所有 Excel 解析合并成一张总表
+  //   2) 批量导出原文件：选中的（或全部）原文件按原文件名打包成 zip
+  // ============================
+
+  _attMime(type) {
+    const map = {
+      word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      excel: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      pdf: 'application/pdf',
+      ppt: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    };
+    return map[type] || 'application/octet-stream';
+  },
+
+  // 把 Store 里的文件（含云端按需补齐的正文）还原成 Blob
+  async _fileToBlob(file) {
+    if (!file) return null;
+    let f = file;
+    if (!(typeof f.content === 'string' && f.content.length)) {
+      try { f = await Store.loadFileContent(f.id) || f; } catch (e) { f = null; }
+    }
+    if (!f || !(typeof f.content === 'string' && f.content.length)) return null;
+    try {
+      const bin = atob(f.content);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: f.mimeType || this._attMime(f.type) });
+    } catch (e) { return null; }
+  },
+
+  // 本模块（或全部文件型模块）的文件列表
+  _attFiles(moduleId) {
+    const all = Store.getFiles() || [];
+    if (moduleId === 'all') {
+      return all.filter(f => f && MODULE_CONFIG[f.module] && MODULE_CONFIG[f.module].type === 'file');
+    }
+    return all.filter(f => f && f.module === moduleId);
+  },
+
+  // 批量导出原文件：1 个直接下载，多个打包 zip（zip 内保持原文件名与扩展名）
+  async exportAttachments(moduleId, fileIds) {
+    const config = MODULE_CONFIG[moduleId];
+    let targets = this._attFiles(moduleId);
+    if (fileIds && fileIds.length) targets = targets.filter(f => fileIds.includes(f.id));
+    if (!targets.length) { App.toast('没有可导出的文件', 'warning'); return; }
+
+    App.toast(`📦 正在准备 ${targets.length} 个文件...`, 'info');
+    const files = [];
+    let skipped = 0;
+    for (const f of targets) {
+      const blob = await this._fileToBlob(f);
+      if (!blob) { skipped++; continue; }
+      files.push({ name: this._ensureExt(f.name, blob.type), blob, module: f.module, moduleTitle: f.moduleTitle });
+    }
+    if (!files.length) { App.toast('文件内容还没同步到本机，请联网停留十几秒后重试', 'error'); return; }
+
+    if (files.length === 1) {
+      this.downloadBlob(files[0].blob, files[0].name);
+      App.toast('✅ 已开始下载原文件', 'success');
+      if (skipped) App.toast(`⚠️ 有 ${skipped} 个文件内容未同步，已跳过`, 'warning');
+      return;
+    }
+
+    if (typeof JSZip !== 'undefined') {
+      const zip = new JSZip();
+      files.forEach(f => {
+        // 跨模块批量导出时按模块名分文件夹，避免同名文件互相覆盖
+        const path = (moduleId === 'all' && f.moduleTitle) ? f.moduleTitle + '/' + f.name : f.name;
+        zip.file(path, f.blob);
+      });
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const base = moduleId === 'all' ? '考勤与登记_原文件汇总' : (config ? config.title : '原文件汇总');
+      this.downloadBlob(zipBlob, `${base}_${this.getDateString()}.zip`);
+      App.toast(`✅ 已将 ${files.length} 个原文件打包下载`, 'success');
+      if (skipped) App.toast(`⚠️ 有 ${skipped} 个文件内容未同步，已跳过`, 'warning');
+    } else {
+      App.toast(`⚠️ 将依次下载 ${files.length} 个文件，请允许浏览器下载`, 'info');
+      files.forEach((f, idx) => setTimeout(() => this.downloadBlob(f.blob, f.name), idx * 800));
+    }
+  },
+
+  // 各考勤表的导出列定义（字段名 -> 表头）
+  _attColumns(moduleId) {
+    if (moduleId === 'weekend') {
+      return [['period', '周次'], ['index', '序号'], ['name', '姓名'], ['destination_type', '去向'],
+        ['destination', '目的地'], ['dorm', '宿舍号'], ['phone', '电话'], ['leaveDate', '离校日期']];
+    }
+    if (moduleId === 'leave') {
+      return [['period', '月份'], ['studentId', '学号'], ['name', '姓名'], ['schoolYear', '学年度'],
+        ['semester', '开课学期'], ['approveTime', '审批时间'], ['approver', '审批人'], ['leaveType', '请假类型'],
+        ['startDate', '请假开始时间'], ['endDate', '请假结束时间'], ['submitType', '请假提交类型'],
+        ['reason', '请假原因'], ['days', '请假天数'], ['outCampus', '是否出校'], ['cancelled', '是否销假'],
+        ['cancelTime', '销假时间']];
+    }
+    if (moduleId === 'absence') {
+      return [['period', '月份'], ['studentId', '学号'], ['name', '姓名'], ['schoolYear', '开课学年度'],
+        ['semester', '开课学期码'], ['approveTime', '审批时间'], ['approver', '审批人'], ['absenceDate', '缺勤日期'],
+        ['absenceType', '缺勤类型'], ['attendType', '考勤类型'], ['reason', '缺勤原因']];
+    }
+    return [];
+  },
+
+  // 从文件名/备注里取周次或月份，如【第1周】第一周周末去向登记表.xlsx -> 第1周
+  _attPeriodOf(file) {
+    const name = String(file && file.name || '');
+    const hit = name.match(/【([^】]{1,12})】/);
+    if (hit && hit[1]) return hit[1].trim();
+    const w = name.match(/第\s*[0-9一二三四五六七八九十]+\s*周/);
+    if (w) return w[0];
+    const m = name.match(/(\d{1,2})\s*月/);
+    if (m) return m[1] + '月';
+    return '';
+  },
+
+  // 单张考勤表 -> 记录数组（不写库、不刷新界面，只解析）
+  _parseAttSheet(ws, moduleId, period) {
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const out = [];
+    if (moduleId === 'weekend') {
+      const map = ['index', 'name', 'destination_type', 'destination', 'dorm', 'phone', 'leaveDate'];
+      const parseBlock = (colStart) => {
+        let headerRow = -1;
+        for (let i = 0; i < Math.min(aoa.length, 6); i++) {
+          const row = aoa[i] || [];
+          if (String(row[colStart + 1] || '').includes('姓名')) { headerRow = i; break; }
+        }
+        if (headerRow === -1) return;
+        for (let r = headerRow + 1; r < aoa.length; r++) {
+          const row = aoa[r] || [];
+          const name = String(row[colStart + 1] || '').trim();
+          if (!name || name === '姓名') continue;
+          const rec = { period: period };
+          map.forEach((f, i) => { rec[f] = row[colStart + i] !== undefined && row[colStart + i] !== null ? String(row[colStart + i]).trim() : ''; });
+          out.push(rec);
+        }
+      };
+      parseBlock(0);
+      parseBlock(8);
+      return out;
+    }
+
+    const fieldMap = moduleId === 'leave'
+      ? { '学号': 'studentId', '姓名': 'name', '学年度': 'schoolYear', '开课学期': 'semester', '审批时间': 'approveTime',
+        '审批人': 'approver', '请假类型': 'leaveType', '请假开始时间': 'startDate', '请假结束时间': 'endDate',
+        '请假提交类型': 'submitType', '请假原因': 'reason', '请假天数': 'days', '是否出校': 'outCampus',
+        '是否销假': 'cancelled', '销假时间': 'cancelTime' }
+      : { '学号': 'studentId', '姓名': 'name', '开课学年度': 'schoolYear', '开课学期码': 'semester',
+        '审批时间': 'approveTime', '审批人': 'approver', '缺勤日期': 'absenceDate', '缺勤类型': 'absenceType',
+        '考勤类型': 'attendType', '缺勤原因': 'reason' };
+
+    const headerRow = aoa[0] || [];
+    const colField = {};
+    headerRow.forEach((h, ci) => {
+      // 请假表第3列表头是 "2025-2024" 这类学年度数字，按列号硬编码映射
+      if (moduleId === 'leave' && ci === 2) { colField[2] = 'schoolYear'; return; }
+      const hn = String(h || '').replace(/\r?\n/g, '').split('（')[0].split('(')[0].trim();
+      if (fieldMap[hn]) colField[ci] = fieldMap[hn];
+    });
+    for (let r = 1; r < aoa.length; r++) {
+      const row = aoa[r] || [];
+      const rec = { period: period };
+      Object.keys(colField).forEach(ci => {
+        const v = row[ci];
+        rec[colField[ci]] = v !== undefined && v !== null ? String(v).trim() : '';
+      });
+      if (rec.name || rec.studentId) out.push(rec);
+    }
+    return out;
+  },
+
+  // 导出汇总表：把本模块下所有 Excel 合并成一张总表
+  async exportAttachmentSummary(moduleId, fileIds) {
+    const config = MODULE_CONFIG[moduleId];
+    if (!config || config.type !== 'file') { App.toast('该模块不支持汇总导出', 'warning'); return; }
+    if (typeof XLSX === 'undefined') { App.toast('Excel 组件还没加载完成，请稍后重试', 'warning'); return; }
+
+    let targets = this._attFiles(moduleId);
+    if (fileIds && fileIds.length) targets = targets.filter(f => fileIds.includes(f.id));
+    if (!targets.length) { App.toast('没有可汇总的文件', 'warning'); return; }
+
+    App.toast(`📤 正在解析 ${targets.length} 个文件...`, 'info');
+    const rows = [];
+    let parsed = 0, skippedType = 0, skippedEmpty = 0;
+
+    for (const f of targets) {
+      const isSheet = /\.(xlsx|xls|csv)$/i.test(f.name || '') || f.type === 'excel';
+      if (!isSheet) { skippedType++; continue; }
+      const blob = await this._fileToBlob(f);
+      if (!blob) { skippedType++; continue; }
+      try {
+        const buf = await blob.arrayBuffer();
+        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) { skippedEmpty++; continue; }
+        const recs = this._parseAttSheet(ws, moduleId, this._attPeriodOf(f));
+        if (!recs.length) { skippedEmpty++; continue; }
+        rows.push(...recs);
+        parsed++;
+      } catch (e) {
+        console.warn('解析失败:', f.name, e);
+        skippedEmpty++;
+      }
+    }
+
+    if (!rows.length) {
+      App.toast('没有解析出任何数据，可改用“批量导出原文件”下载原表', 'error');
+      return;
+    }
+
+    const cols = this._attColumns(moduleId);
+    const aoa = [cols.map(c => c[1])];
+    rows.forEach(r => aoa.push(cols.map(c => r[c[0]] !== undefined && r[c[0]] !== null ? r[c[0]] : '')));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = cols.map(c => ({ wch: Math.min(Math.max(c[1].length * 2 + 6, 10), 30) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, config.title.slice(0, 31));
+
+    const fileName = `${config.title}_汇总_${this.getDateString()}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    App.toast(`✅ 已汇总 ${parsed} 个文件共 ${rows.length} 条数据`, 'success');
+    if (skippedType || skippedEmpty) {
+      App.toast(`⚠️ 跳过 ${skippedType + skippedEmpty} 个文件（非 Excel 或无有效数据）`, 'warning');
+    }
+  },
+
   // 浏览器直接下载 Blob，保持原文件名
   downloadBlob(blob, fileName) {
     const url = URL.createObjectURL(blob);
