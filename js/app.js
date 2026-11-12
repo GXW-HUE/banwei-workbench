@@ -310,19 +310,25 @@ const App = {
     const config = MODULE_CONFIG[moduleId];
     const allFiles = Store.getFiles();
     const myFiles = allFiles.filter(f => f.module === moduleId);
+    // 切换模块时清空勾选，避免把别的模块的文件带进来导
+    if (this._fileSelModule !== moduleId) { this._fileSel = new Set(); this._fileSelModule = moduleId; }
+    // 清掉已不存在文件的勾选
+    Array.from(this._fileSel).forEach(fid => { if (!myFiles.some(f => f.id === fid)) this._fileSel.delete(fid); });
+
+    const selCount = myFiles.filter(f => this._fileSel.has(f.id)).length;
 
     let html = `
-      <div class="action-bar">
-        <div class="action-bar-left" style="gap:8px;align-items:center;">
+      <div class="action-bar" style="flex-wrap:wrap;gap:8px;">
+        <div class="action-bar-left" style="gap:8px;align-items:center;flex-wrap:wrap;">
           <button class="btn btn-success" onclick="App.openImportModal('${moduleId}')">📥 上传文件</button>
           <span style="font-size:13px;color:var(--text-secondary);">共 ${myFiles.length} 个文件</span>
         </div>
         <div class="action-bar-right" style="gap:8px;">
-          <button class="btn btn-success" onclick="App.handleModuleExport('${moduleId}')">📤 导出原文件</button>
+          <button class="btn btn-success" onclick="App.handleModuleExport('${moduleId}')">📤 导出原文件<span id="file-sel-badge-${moduleId}" class="selection-badge${selCount ? '' : ' hidden'}">${selCount}</span></button>
         </div>
       </div>
       <div style="padding:10px 0;font-size:13px;color:var(--text-secondary);">
-        💡 在此模块上传一个文件，就显示为一个文件，可点击"查看"在线预览，或下载/删除。"导出原文件"会把本模块的文件按原文件名打包下载（1 个直接下载，多个打包成 zip）。
+        💡 在此模块上传一个文件，就显示为一个文件，可点击"查看"在线预览，或下载/删除。勾选后「导出原文件」只导选中的文件，不勾选则导出全部（1 个直接下载，多个打包成 zip）。
       </div>
     `;
 
@@ -336,24 +342,65 @@ const App = {
           </div>
         </div>`;
     } else {
+      html += `
+        <div style="display:flex;align-items:center;gap:6px;padding:0 2px 6px;font-size:13px;color:var(--text-secondary);">
+          <label class="check-hit" style="width:auto;min-height:36px;justify-content:flex-start;gap:8px;padding:0 6px;">
+            <input type="checkbox" id="file-select-all-${moduleId}" ${selCount === myFiles.length ? 'checked' : ''} ${selCount > 0 && selCount < myFiles.length ? 'data-indeterminate="1"' : ''} onchange="App.toggleFileSelectAll('${moduleId}', this.checked)">
+            <span>全选（已选 ${selCount} / ${myFiles.length}）</span>
+          </label>
+        </div>`;
       html += '<div class="file-list">';
       myFiles.forEach(file => {
-        html += this._renderFileItem(file, false);
+        html += this._renderFileItem(file, false, true);
       });
       html += '</div>';
     }
     return html;
   },
 
-  // ===== 文件型模块：勾选（保留给“导出选中”用，默认不展示） =====
+  // ===== 文件型模块：勾选 =====
   toggleFileSelect(fileId, checked) {
     if (checked) this._fileSel.add(fileId); else this._fileSel.delete(fileId);
+    this._syncFileSelUI();
   },
 
   toggleFileSelectAll(moduleId, checked) {
     const myFiles = (Store.getFiles() || []).filter(f => f.module === moduleId);
     if (checked) myFiles.forEach(f => this._fileSel.add(f.id));
     else this._fileSel = new Set();
+    myFiles.forEach(f => {
+      const box = document.querySelector(`.file-item input[data-fid="${f.id}"]`);
+      if (box) box.checked = checked;
+    });
+    this._syncFileSelUI();
+  },
+
+  _syncFileSelUI() {
+    const moduleId = this._fileSelModule;
+    const myFiles = (Store.getFiles() || []).filter(f => f.module === moduleId);
+    const n = myFiles.filter(f => this._fileSel.has(f.id)).length;
+    const badge = document.getElementById('file-sel-badge-' + moduleId);
+    if (badge) {
+      badge.textContent = n;
+      badge.classList.toggle('hidden', n === 0);
+    }
+    const all = document.getElementById('file-select-all-' + moduleId);
+    if (all) {
+      all.checked = myFiles.length > 0 && n === myFiles.length;
+      all.indeterminate = n > 0 && n < myFiles.length;
+    }
+    const label = all && all.parentElement && all.parentElement.querySelector('span');
+    if (label) label.textContent = `全选（已选 ${n} / ${myFiles.length}）`;
+  },
+
+  exportFileModuleAttachments(moduleId) {
+    const ids = Array.from(this._fileSel).filter(id => (Store.getFiles() || []).some(f => f.id === id && f.module === moduleId));
+    return Exporter.exportAttachments(moduleId, ids.length ? ids : null);
+  },
+
+  exportFileModuleSummary(moduleId) {
+    const ids = Array.from(this._fileSel);
+    return Exporter.exportAttachmentSummary(moduleId, ids.length ? ids : null);
   },
 
   // ===== 渲染仪表盘 =====
@@ -1297,10 +1344,9 @@ const App = {
 
   // 模块页面导出按钮：Word 模块直接导出原文件，其他模块弹出格式选择
   handleModuleExport(moduleId) {
-    // 文件型模块（周末去向 / 学生请假 / 学生缺勤）：数据就是上传的原文件，直接打包导出
+    // 文件型模块（周末去向 / 学生请假 / 学生缺勤）：数据就是上传的原文件，勾选了就导勾选，否则导全部
     if (MODULE_CONFIG[moduleId] && MODULE_CONFIG[moduleId].type === 'file') {
-      Exporter.exportAttachments(moduleId, null);
-      return;
+      return this.exportFileModuleAttachments(moduleId);
     }
     const wordModules = ['weekly', 'monthly', 'meeting', 'activity', 'talk', 'friendship'];
     if (wordModules.includes(moduleId)) {
@@ -1686,7 +1732,7 @@ const App = {
 
     return `
       <div class="file-item">
-        ${selectable ? `<input type="checkbox" style="flex-shrink:0;margin-right:2px;width:16px;height:16px;cursor:pointer;" ${checked ? 'checked' : ''} onclick="event.stopPropagation();" onchange="App.toggleFileSelect('${file.id}', this.checked)">` : ''}
+        ${selectable ? `<label class="check-hit check-hit-file" onclick="event.stopPropagation();"><input type="checkbox" data-fid="${file.id}" style="width:20px;height:20px;margin:0;flex-shrink:0;cursor:pointer;accent-color:var(--primary);" ${checked ? 'checked' : ''} onchange="App.toggleFileSelect('${file.id}', this.checked)"></label>` : ''}
         <div class="file-icon" style="${bgStyle}width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-md);font-size:20px;flex-shrink:0;">${icon}</div>
         <div class="file-info" style="flex:1;min-width:0;">
           <div class="file-name" style="font-size:14px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtml(file.name)}</div>
