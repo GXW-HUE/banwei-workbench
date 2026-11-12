@@ -704,48 +704,49 @@ const Exporter = {
     return out;
   },
 
+  // 汇总一个文件型模块下所有 Excel 的记录（供单模块导出 / 一键导出全部复用）
+  async _collectAttRows(moduleId, fileIds) {
+    let targets = this._attFiles(moduleId);
+    if (fileIds && fileIds.length) targets = targets.filter(f => fileIds.includes(f.id));
+    const rows = [];
+    let parsed = 0, skipped = 0;
+    for (const f of targets) {
+      const isSheet = /\.(xlsx|xls|csv)$/i.test(f.name || '') || f.type === 'excel';
+      if (!isSheet) { skipped++; continue; }
+      const blob = await this._fileToBlob(f);
+      if (!blob) { skipped++; continue; }
+      try {
+        const buf = await blob.arrayBuffer();
+        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) { skipped++; continue; }
+        const recs = this._parseAttSheet(ws, moduleId, this._attPeriodOf(f));
+        if (!recs.length) { skipped++; continue; }
+        rows.push(...recs);
+        parsed++;
+      } catch (e) {
+        console.warn('解析失败:', f.name, e);
+        skipped++;
+      }
+    }
+    return { rows: rows, parsed: parsed, skipped: skipped };
+  },
+
   // 导出汇总表：把本模块下所有 Excel 合并成一张总表
   async exportAttachmentSummary(moduleId, fileIds) {
     const config = MODULE_CONFIG[moduleId];
     if (!config || config.type !== 'file') { App.toast('该模块不支持汇总导出', 'warning'); return; }
     if (typeof XLSX === 'undefined') { App.toast('Excel 组件还没加载完成，请稍后重试', 'warning'); return; }
 
-    let targets = this._attFiles(moduleId);
-    if (fileIds && fileIds.length) targets = targets.filter(f => fileIds.includes(f.id));
-    if (!targets.length) { App.toast('没有可汇总的文件', 'warning'); return; }
-
-    App.toast(`📤 正在解析 ${targets.length} 个文件...`, 'info');
-    const rows = [];
-    let parsed = 0, skippedType = 0, skippedEmpty = 0;
-
-    for (const f of targets) {
-      const isSheet = /\.(xlsx|xls|csv)$/i.test(f.name || '') || f.type === 'excel';
-      if (!isSheet) { skippedType++; continue; }
-      const blob = await this._fileToBlob(f);
-      if (!blob) { skippedType++; continue; }
-      try {
-        const buf = await blob.arrayBuffer();
-        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        if (!ws) { skippedEmpty++; continue; }
-        const recs = this._parseAttSheet(ws, moduleId, this._attPeriodOf(f));
-        if (!recs.length) { skippedEmpty++; continue; }
-        rows.push(...recs);
-        parsed++;
-      } catch (e) {
-        console.warn('解析失败:', f.name, e);
-        skippedEmpty++;
-      }
-    }
-
-    if (!rows.length) {
-      App.toast('没有解析出任何数据，可改用“批量导出原文件”下载原表', 'error');
+    const got = await this._collectAttRows(moduleId, fileIds);
+    if (!got.rows.length) {
+      App.toast('没有解析出任何数据，可改用“导出原文件”下载原表', 'error');
       return;
     }
 
     const cols = this._attColumns(moduleId);
     const aoa = [cols.map(c => c[1])];
-    rows.forEach(r => aoa.push(cols.map(c => r[c[0]] !== undefined && r[c[0]] !== null ? r[c[0]] : '')));
+    got.rows.forEach(r => aoa.push(cols.map(c => r[c[0]] !== undefined && r[c[0]] !== null ? r[c[0]] : '')));
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = cols.map(c => ({ wch: Math.min(Math.max(c[1].length * 2 + 6, 10), 30) }));
     const wb = XLSX.utils.book_new();
@@ -753,10 +754,8 @@ const Exporter = {
 
     const fileName = `${config.title}_汇总_${this.getDateString()}.xlsx`;
     XLSX.writeFile(wb, fileName);
-    App.toast(`✅ 已汇总 ${parsed} 个文件共 ${rows.length} 条数据`, 'success');
-    if (skippedType || skippedEmpty) {
-      App.toast(`⚠️ 跳过 ${skippedType + skippedEmpty} 个文件（非 Excel 或无有效数据）`, 'warning');
-    }
+    App.toast(`✅ 已汇总 ${got.parsed} 个文件共 ${got.rows.length} 条数据`, 'success');
+    if (got.skipped) App.toast(`⚠️ 跳过 ${got.skipped} 个文件（非 Excel 或无有效数据）`, 'warning');
   },
 
   // 浏览器直接下载 Blob，保持原文件名
@@ -774,10 +773,10 @@ const Exporter = {
 
   exportAllFiles(format) {
     switch (format) {
-      case 'excel': this.exportAllExcel(); break;
-      case 'word': this.exportAllWord(); break;
-      case 'pdf': this.exportAllPDF(); break;
-      case 'ppt': this.exportAllPPT(); break;
+      case 'excel': return this.exportAllExcel();
+      case 'word': return this.exportAllWord();
+      case 'pdf': return this.exportAllPDF();
+      case 'ppt': return this.exportAllPPT();
     }
   },
 
@@ -848,7 +847,7 @@ const Exporter = {
     }
   },
 
-  exportAllExcel() {
+  async exportAllExcel() {
     const wb = XLSX.utils.book_new();
     Object.keys(MODULE_CONFIG).forEach(moduleId => {
       const config = MODULE_CONFIG[moduleId];
@@ -874,6 +873,19 @@ const Exporter = {
       }
       XLSX.utils.book_append_sheet(wb, ws, config.title.slice(0, 31));
     });
+
+    // 文件型模块（周末去向 / 学生请假 / 学生缺勤）：把上传的 Excel 解析合并后一并导出
+    for (const mid of ['weekend', 'leave', 'absence']) {
+      const cols = this._attColumns(mid);
+      if (!cols.length) continue;
+      const got = await this._collectAttRows(mid);
+      if (!got.rows.length) continue;
+      const aoa = [cols.map(c => c[1])];
+      got.rows.forEach(r => aoa.push(cols.map(c => r[c[0]] !== undefined && r[c[0]] !== null ? r[c[0]] : '')));
+      const wsAtt = XLSX.utils.aoa_to_sheet(aoa);
+      wsAtt['!cols'] = cols.map(c => ({ wch: Math.min(Math.max(c[1].length * 2 + 6, 10), 30) }));
+      XLSX.utils.book_append_sheet(wb, wsAtt, MODULE_CONFIG[mid].title.slice(0, 31));
+    }
 
     const fileName = `班委工作台_全部数据_${this.getDateString()}.xlsx`;
     XLSX.writeFile(wb, fileName);
