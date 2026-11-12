@@ -310,23 +310,19 @@ const App = {
     const config = MODULE_CONFIG[moduleId];
     const allFiles = Store.getFiles();
     const myFiles = allFiles.filter(f => f.module === moduleId);
-    // 切换模块时清空勾选，避免把别的模块的文件带进来导
-    if (this._fileSelModule !== moduleId) { this._fileSel = new Set(); this._fileSelModule = moduleId; }
-
-    const selCount = myFiles.filter(f => this._fileSel.has(f.id)).length;
 
     let html = `
-      <div class="action-bar" style="flex-wrap:wrap;gap:8px;">
-        <div class="action-bar-left" style="gap:8px;align-items:center;flex-wrap:wrap;">
+      <div class="action-bar">
+        <div class="action-bar-left" style="gap:8px;align-items:center;">
           <button class="btn btn-success" onclick="App.openImportModal('${moduleId}')">📥 上传文件</button>
-          <button class="btn btn-primary" onclick="App.exportFileModuleSummary('${moduleId}')" title="把本模块所有 Excel 解析合并成一张总表">📤 导出汇总表</button>
-          <button class="btn btn-secondary" onclick="App.exportFileModuleAttachments('${moduleId}')" title="把选中（或全部）原文件按原文件名打包下载">📦 批量导出<span id="file-sel-badge-${moduleId}" class="selection-badge${selCount ? '' : ' hidden'}">${selCount}</span></button>
           <span style="font-size:13px;color:var(--text-secondary);">共 ${myFiles.length} 个文件</span>
+        </div>
+        <div class="action-bar-right" style="gap:8px;">
+          <button class="btn btn-success" onclick="App.handleModuleExport('${moduleId}')">📤 导出原文件</button>
         </div>
       </div>
       <div style="padding:10px 0;font-size:13px;color:var(--text-secondary);">
-        💡 在此模块上传一个文件，就显示为一个文件，可点击"查看"在线预览，或下载/删除。
-        <br>📤「导出汇总表」把所有 Excel 合并成一张总表；📦「批量导出」按原文件名打包下载（勾选后只导选中的，不勾选导全部）。
+        💡 在此模块上传一个文件，就显示为一个文件，可点击"查看"在线预览，或下载/删除。"导出原文件"会把本模块的文件按原文件名打包下载（1 个直接下载，多个打包成 zip）。
       </div>
     `;
 
@@ -340,55 +336,24 @@ const App = {
           </div>
         </div>`;
     } else {
-      html += `
-        <div style="display:flex;align-items:center;gap:8px;padding:0 2px 6px;font-size:13px;color:var(--text-secondary);">
-          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="checkbox" id="file-select-all-${moduleId}" onchange="App.toggleFileSelectAll('${moduleId}', this.checked)" ${selCount > 0 && selCount === myFiles.length ? 'checked' : ''}>
-            全选
-          </label>
-        </div>`;
       html += '<div class="file-list">';
       myFiles.forEach(file => {
-        html += this._renderFileItem(file, false, true);
+        html += this._renderFileItem(file, false);
       });
       html += '</div>';
     }
     return html;
   },
 
-  // ===== 文件型模块：勾选与导出 =====
+  // ===== 文件型模块：勾选（保留给“导出选中”用，默认不展示） =====
   toggleFileSelect(fileId, checked) {
     if (checked) this._fileSel.add(fileId); else this._fileSel.delete(fileId);
-    this._updateFileSelBadge();
   },
 
   toggleFileSelectAll(moduleId, checked) {
     const myFiles = (Store.getFiles() || []).filter(f => f.module === moduleId);
     if (checked) myFiles.forEach(f => this._fileSel.add(f.id));
     else this._fileSel = new Set();
-    // 重渲染保持勾选状态
-    const area = document.getElementById('content-area');
-    if (area) area.innerHTML = this.renderFileModule(moduleId);
-    this._updateFileSelBadge();
-  },
-
-  _updateFileSelBadge() {
-    const moduleId = this._fileSelModule;
-    const badge = document.getElementById('file-sel-badge-' + moduleId);
-    if (!badge) return;
-    const n = this._fileSel.size;
-    badge.textContent = n;
-    badge.classList.toggle('hidden', n === 0);
-  },
-
-  exportFileModuleAttachments(moduleId) {
-    const ids = Array.from(this._fileSel);
-    return Exporter.exportAttachments(moduleId, ids);
-  },
-
-  exportFileModuleSummary(moduleId) {
-    const ids = Array.from(this._fileSel);
-    return Exporter.exportAttachmentSummary(moduleId, ids);
   },
 
   // ===== 渲染仪表盘 =====
@@ -1332,6 +1297,11 @@ const App = {
 
   // 模块页面导出按钮：Word 模块直接导出原文件，其他模块弹出格式选择
   handleModuleExport(moduleId) {
+    // 文件型模块（周末去向 / 学生请假 / 学生缺勤）：数据就是上传的原文件，直接打包导出
+    if (MODULE_CONFIG[moduleId] && MODULE_CONFIG[moduleId].type === 'file') {
+      Exporter.exportAttachments(moduleId, null);
+      return;
+    }
     const wordModules = ['weekly', 'monthly', 'meeting', 'activity', 'talk', 'friendship'];
     if (wordModules.includes(moduleId)) {
       const selectedIds = this.getSelectedRecordIds(moduleId);
