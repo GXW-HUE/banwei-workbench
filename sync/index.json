@@ -976,27 +976,6 @@
       "contentIn": "file"
     },
     {
-      "name": "【第1周】第一周周末去留登记表.xlsx",
-      "module": "weekend",
-      "moduleTitle": "周末去向登记",
-      "type": "excel",
-      "label": "Excel",
-      "icon": "📊",
-      "recordCount": 0,
-      "isAttachment": true,
-      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "size": 16727,
-      "id": "file_1791982513417_dbu8d2",
-      "createdAt": "2026-10-14T12:55:13.417Z",
-      "hasContent": true,
-      "contentChars": 22304,
-      "cloudLimited": false,
-      "contentChunks": true,
-      "contentChunkCount": 1,
-      "contentLength": 22304,
-      "contentIn": "file"
-    },
-    {
       "name": "【国庆】国庆去向表 .xlsx",
       "module": "weekend",
       "moduleTitle": "周末去向登记",
@@ -2100,7 +2079,8 @@
       "file_1794478091914_uo5loz": 1794667218944,
       "file_1794478216386_27zvfn": 1794667224827,
       "file_1794478101194_ka2mpx": 1794667220753,
-      "file_1794478133208_23ns4z": 1794667222820
+      "file_1794478133208_23ns4z": 1794667222820,
+      "file_1791982513417_dbu8d2": 1794745730979
     },
     "weekly": {
       "imp_1792917231447_2vjgx2": 1793526730995,
