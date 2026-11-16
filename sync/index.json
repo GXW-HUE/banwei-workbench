@@ -367,6 +367,18 @@
       "sourceFile": {
         "fileId": "file_1794809519886_1bp0pp"
       }
+    },
+    {
+      "date": "2026-10-06",
+      "studentName": "张锦辉",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 10 月 06日    谈话地点： 机电309被谈话人： 机电一体化2503  班  张锦辉  谈话人：     \n\n谈话内容：近期该生情绪持续低落、上课精神不振，我利用查寝时间到宿舍与其谈心，了解其思想、睡眠和生活状况，进行初步情绪疏导。\n\n一、学生主要问题\n\n上课注意力难以集中；对以往喜欢的篮球、社团活动提不起兴趣，表示“什么都不想干”；食欲下降，与舍友交流变少，课余多独自待在宿舍，回避集体活动\n\n二、已采取的应对措施\n\n以倾听为主、不急于评判，给其充分的表达空间，让其把近期压力和感受说出来，稳定情绪、建立信任；叮嘱同宿舍同学和班委近期多留意其情绪变化，发现异常第一时间报告；与其约定两天后再单独聊一次，持续跟进。\n\n三、后续拟应对措施\n\n与任课教师沟通，短期内适当减轻其作业压力；鼓励其恢复规律作息和适度运动，每天保证基本的户外活动时间；如评估结果提示需要专业干预，及时协助其就医并做好陪同和跟踪\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809527184_2m5ew1",
+      "sourceFile": {
+        "fileId": "file_1794809527183_uwrjos"
+      }
     }
   ],
   "friendship": [
@@ -2212,6 +2224,27 @@
       "contentChunks": true,
       "contentChunkCount": 1,
       "contentLength": 16736,
+      "contentIn": "file"
+    },
+    {
+      "name": "谈心谈话记录纸10月机电2503班（第一次张锦辉）.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12507,
+      "id": "file_1794809527183_uwrjos",
+      "createdAt": "2026-11-16T06:12:07.183Z",
+      "hasContent": true,
+      "contentChars": 16676,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16676,
       "contentIn": "file"
     }
   ],
