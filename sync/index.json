@@ -537,6 +537,18 @@
       "sourceFile": {
         "fileId": "file_1794809682916_3cwq5x"
       }
+    },
+    {
+      "date": "2026-10-20",
+      "activityType": "",
+      "participants": "张锦辉",
+      "content": "\n\n附件 1\n\n“四进两联一交友”工作记录表\n\n \n\n姓名\n\n窦咏咏\n\n所属部门\n\n机电工程学院学工办\n\n联系对象\n\n机电一体化2503 张锦辉\n\n联系时间\n\n2026.10.20\n\n联系地点\n\n三公寓\n\n联系形式\n\n面谈\n\n\n\n具体工作详情\n\n1.10月20日陪同其完成第二次心理咨询，咨询后交流感受。\n\n2.就其与舍友的口角分别沟通，帮助表达感受、修复关系。\n\n3.共同梳理本周做到的进步，强化正向反馈与自我认同。\n\n\n\n需要解决的问题\n\n1.情绪时好时坏，遇小事易烦躁，事后又陷入自责。\n\n2.早醒仍存在，课堂参与度低，对未来缺乏期待。\n\n3.担心被贴标签而回避集体活动，宿舍关系一度紧张。\n\n\n\n建议采取措施\n\n1.持续每周谈心，跟踪情绪波动频率与持续时间并记录。\n\n2.制定小目标清单，从作息、运动、课堂发言逐步推进。\n\n3.班级安排力所能及的角色，开展心理主题班会减少标签化。\n\n\n\n问题处理结果\n\n1.已完成第二次咨询，本人反馈“心里松了一点”。\n\n2.本周全勤未再缺早课，宿舍关系已缓和。\n\n3.开始恢复参加班级活动，进入稳步跟踪阶段。\n\n注：图文材料附在工作记录表后\n\n\n\n\n\n附件 2\t\n\n“四进两联一交友”工作统计表\n\n序号\n\n填写人姓名\n\n联系对象\n\n联系时间\n\n联系地点\n\n联系形式\n\n调研，谈心谈话记录\n\n需要解决的问题\n\n建议采取措施\n\n问题处理结果\n\n1\n\n窦咏咏\n\n机电一体化2503 张锦辉\n\n2026.10.20\n\n三公寓\n\n面谈\n\n陪同完成第二次心理咨询并谈心，巩固咨询效果、修复宿舍关系。\n\n1.情绪时好时坏，遇小事易烦躁，事后又陷入自责。2.早醒仍存在，课堂参与度低，对未来缺乏期待。3.担心被贴标签而回避集体活动，宿舍关系一度紧张。\n\n\n\n\n\n1.持续每周谈心，跟踪情绪波动频率与持续时间并记录。2.制定小目标清单，从作息、运动、课堂发言逐步推进。3.班级安排力所能及的角色，开展心理主题班会减少标签化。\n\n\n\n\n\n1.已完成第二次咨询，本人反馈“心里松了一点”。2.本周全勤未再缺早课，宿舍关系已缓和。3.开始恢复参加班级活动，进入稳步跟踪阶段。\n\n\n\n\n\n\n\n\n\n\n\n",
+      "effect": "",
+      "notes": "",
+      "id": "imp_1794809689618_qr6v5l",
+      "sourceFile": {
+        "fileId": "file_1794809689617_cdkaxb"
+      }
     }
   ],
   "meeting": [
@@ -718,7 +730,7 @@
   "absence": [],
   "_files": [
     {
-      "name": "机电工程学院“四进两联一交友”表格（张锦辉10月13日）.docx",
+      "name": "机电工程学院“四进两联一交友”表格（张锦辉10月20日）.docx",
       "module": "friendship",
       "moduleTitle": "四进两联一交友",
       "type": "word",
@@ -727,14 +739,35 @@
       "recordCount": 1,
       "isAttachment": true,
       "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 21576,
-      "id": "file_1794809682916_3cwq5x",
-      "createdAt": "2026-11-16T06:14:42.916Z",
+      "size": 21577,
+      "id": "file_1794809689617_cdkaxb",
+      "createdAt": "2026-11-16T06:14:49.617Z",
       "hasContent": true,
-      "contentChars": 28768,
+      "contentChars": 28772,
       "contentChunks": true,
       "contentChunkCount": 1,
-      "contentLength": 28768,
+      "contentLength": 28772,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
+    {
+      "name": "机电工程学院“四进两联一交友”表格（张锦辉10月6日）.docx",
+      "module": "friendship",
+      "moduleTitle": "四进两联一交友",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 21585,
+      "id": "file_1794809677239_ktuz0f",
+      "createdAt": "2026-11-16T06:14:37.239Z",
+      "hasContent": true,
+      "contentChars": 28780,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 28780,
       "cloudLimited": false,
       "contentIn": "file"
     },
@@ -2326,7 +2359,7 @@
       "contentIn": "file"
     },
     {
-      "name": "机电工程学院“四进两联一交友”表格（张锦辉10月6日）.docx",
+      "name": "机电工程学院“四进两联一交友”表格（张锦辉10月13日）.docx",
       "module": "friendship",
       "moduleTitle": "四进两联一交友",
       "type": "word",
@@ -2335,15 +2368,15 @@
       "recordCount": 1,
       "isAttachment": true,
       "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 21585,
-      "id": "file_1794809677239_ktuz0f",
-      "createdAt": "2026-11-16T06:14:37.239Z",
+      "size": 21576,
+      "id": "file_1794809682916_3cwq5x",
+      "createdAt": "2026-11-16T06:14:42.916Z",
       "hasContent": true,
-      "contentChars": 28780,
+      "contentChars": 28768,
       "cloudLimited": false,
       "contentChunks": true,
       "contentChunkCount": 1,
-      "contentLength": 28780,
+      "contentLength": 28768,
       "contentIn": "file"
     }
   ],
