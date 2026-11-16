@@ -295,6 +295,18 @@
       "sourceFile": {
         "fileId": "file_1794809095317_osuazg"
       }
+    },
+    {
+      "date": "2026-03-09",
+      "studentName": "张迄之",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 03 月 09日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张迄之  谈话人：     \n\n谈话内容：学生无视校纪校规，上课迟到现象频发，我经过询问了解迟到原因，并对其进行思想教育。\n\n一、学生主要问题\n\n学生新学期返校后状态消极，存在明显厌学情绪，无心投入专业学习，迟迟无法适应校园学习生活节奏，内心抵触在校学习，萌生不想上学、放弃学业的想法。\n\n二、已采取的应对措施\n\n已第一时间与学生一对一谈心，耐心倾听其内心想法，舒缓负面情绪，消除学生戒备心理；结合铁路专业就业前景、学院培养方向做好正向引导，纠正其错误认知。\n\n三、后续拟应对措施\n\n后续将持续定期谈心疏导，实时把控学生思想动态；及时联动学生家长，搭建家校共育桥梁，共同做好思想引导；联合班委、舍友多关怀陪伴，帮助其融入集体；针对性做好学业引导，帮学生树立学习目标，逐步扭转消极心态，督促其回归正常学习生活。\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809110996_ofg1hn",
+      "sourceFile": {
+        "fileId": "file_1794809110995_2yki73"
+      }
     }
   ],
   "friendship": [
@@ -597,6 +609,27 @@
   "leave": [],
   "absence": [],
   "_files": [
+    {
+      "name": "谈心谈话记录纸机电2503班（第一次张迄之） (1)(1).docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 13197,
+      "id": "file_1794809110995_2yki73",
+      "createdAt": "2026-11-16T06:05:10.995Z",
+      "hasContent": true,
+      "contentChars": 17596,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 17596,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
     {
       "name": "9砺己肃规强作风 勤学笃行树班风）.docx",
       "module": "meeting",
