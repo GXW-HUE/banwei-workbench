@@ -331,6 +331,18 @@
       "sourceFile": {
         "fileId": "file_1794809339680_ee6rq1"
       }
+    },
+    {
+      "date": "2026-10-13",
+      "studentName": "张锦辉",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 10 月 13日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张锦辉  谈话人：     \n\n谈话内容：就其情绪和睡眠状况开展第二次跟踪谈心，了解其在学院心理健康教育中心的评估结论、与家长沟通后的反馈，进一步明确帮扶措施。\n\n一、学生主要问题\n\n该生情绪仍偏低落，但比上次愿意开口；课堂上不愿发言，小组任务参与度低；自我评价偏低，存在明显的自责和负担感；与家人沟通不畅，觉得“说了他们也不理解”。\n\n二、已采取的应对措施\n\n；与两门专业课任课教师沟通，商定近期作业可适当延期、课堂提问减少，减轻其压力；安排同宿舍同学和班委组成日常陪伴小组，每天一起吃饭、一起上早课\n\n三、后续拟应对措施\n\n后续将每周固定一次谈心，跟踪咨询进展以及情绪、睡眠、出勤的变化；建立情绪与睡眠观察记录，每周汇总一次；与其家长建立定期联系机制，每月至少沟通一次，必要时请家长来校面谈；协调学业帮扶，安排同学帮其补上落下的课程内容，避免学业压力叠加\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809504223_t72zvm",
+      "sourceFile": {
+        "fileId": "file_1794809504222_khongg"
+      }
     }
   ],
   "friendship": [
@@ -633,6 +645,27 @@
   "leave": [],
   "absence": [],
   "_files": [
+    {
+      "name": "谈心谈话记录纸10月机电2503班（第二次张锦辉）.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12512,
+      "id": "file_1794809504222_khongg",
+      "createdAt": "2026-11-16T06:11:44.222Z",
+      "hasContent": true,
+      "contentChars": 16684,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16684,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
     {
       "name": "谈心谈话张锦辉11月11日.docx",
       "module": "talk",
