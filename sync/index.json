@@ -379,6 +379,18 @@
       "sourceFile": {
         "fileId": "file_1794809527183_uwrjos"
       }
+    },
+    {
+      "date": "2026-10-06",
+      "studentName": "张迄之",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 10 月 06日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张迄之  谈话人：     窦咏咏\n\n谈话内容：学生近期上课迟到、旷课现象频发，我通过调阅班级考勤台账、走访任课教师核实情况后，与其进行谈心谈话，指出问题、讲明纪律要求，并开展批评教育。\n\n一、学生主要问题\n\n深入了解后发现，该生作息严重紊乱，长期熬夜打游戏，同时存在“专业课听不懂、学了也没用”“反正老师不点名”等错误认知，学习目标缺失、内在动力不足。\n\n二、已采取的应对措施\n\n结合铁路专业就业形势和技能证书考取要求做正向引导，帮其认识课堂出勤与就业的直接关系；第一时间电话联系家长，如实通报在校表现，请家长配合监督作息；安排班长和学习委员与其结成督促对子，每天早课前电话提醒\n\n三、后续拟应对措施\n\n协调任课教师和学业帮扶同学，针对其落下的课程内容开展针对性补课，帮其找回学习信心；如再次出现无故旷课，将严格按校纪校规处理并纳入学业预警程序，同时在班内开展一次纪律教育主题班会，以案说法，杜绝同类问题蔓延。\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809535540_onhyd4",
+      "sourceFile": {
+        "fileId": "file_1794809535539_csh7cf"
+      }
     }
   ],
   "friendship": [
@@ -681,6 +693,27 @@
   "leave": [],
   "absence": [],
   "_files": [
+    {
+      "name": "谈心谈话记录纸10月机电2503班（第一次张迄之）.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12627,
+      "id": "file_1794809535539_csh7cf",
+      "createdAt": "2026-11-16T06:12:15.539Z",
+      "hasContent": true,
+      "contentChars": 16836,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16836,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
     {
       "name": "谈心谈话记录纸10月机电2503班（第四次张锦辉）.docx",
       "module": "talk",
