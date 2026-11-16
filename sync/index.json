@@ -319,6 +319,18 @@
       "sourceFile": {
         "fileId": "file_1794809156128_hrdtwb"
       }
+    },
+    {
+      "date": "2026-11-11",
+      "studentName": "张锦辉",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 11 月 11日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张锦辉  谈话人：     \n\n谈话内容：近期该生情绪持续低落、兴趣减退、睡眠欠佳，经了解其因学业压力和人际适应出现抑郁情绪，已进行心理疏导，并联系家长\n\n一、学生主要问题\n\n学业上作业拖延、缺交增多，专业课成绩下滑，回避课堂发言和小组任务；人际上明显减少与舍友、同学的交流，常独处，回避集体活动，自我评价偏低\n\n二、已采取的应对措施\n\n客观说明情况，提醒家长减少指责、多陪伴沟通，争取家庭配合；与任课教师沟通，暂缓部分作业压力，安排学习帮扶结对；落实“一帮一”同伴支持，安排同宿舍同学和班委日常陪伴、关注情绪变化\n\n三、后续拟应对措施\n\n后续每周至少开展一次固定谈心，建立情绪观察记录，跟踪睡眠、食欲、情绪波动和出勤情况；每月与家长沟通一次，形成家校共育合力；在班级开展心理健康教育主题班会，减少标签化，营造支持性氛围；\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809339681_b3vssc",
+      "sourceFile": {
+        "fileId": "file_1794809339680_ee6rq1"
+      }
     }
   ],
   "friendship": [
@@ -621,6 +633,27 @@
   "leave": [],
   "absence": [],
   "_files": [
+    {
+      "name": "谈心谈话张锦辉11月11日.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12481,
+      "id": "file_1794809339680_ee6rq1",
+      "createdAt": "2026-11-16T06:08:59.680Z",
+      "hasContent": true,
+      "contentChars": 16644,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16644,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
     {
       "name": "谈心谈话记录纸机电2503班11.04.docx",
       "module": "talk",
