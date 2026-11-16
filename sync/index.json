@@ -355,6 +355,18 @@
       "sourceFile": {
         "fileId": "file_1794809513075_1x4tgs"
       }
+    },
+    {
+      "date": "2026-10-27",
+      "studentName": "张锦辉",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 10 月 27日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张锦辉  谈话人：     \n\n谈话内容：就其近一个月的整体状态开展阶段性谈心，回顾四次谈心、三次咨询以来的变化，评估情绪与学业恢复情况，明确下一阶段的跟踪帮扶安排。\n\n一、学生主要问题\n\n趋于平稳，自述“比开学那会儿好多了”；睡眠基本规律，开始重新参加班级篮球活动，与舍友关系缓和，愿意主动交流；但仍存在阶段性情绪低落，遇到考试、作业集中时容易焦虑\n\n二、已采取的应对措施\n\n就“会不会复发”的疑虑做解释，说明情绪有起伏是正常的，关键是掌握识别和应对的方法、把求助渠道用起来；与其约定继续按中心安排完成后续咨询，不擅自中断\n\n三、后续拟应对措施\n\n持续跟踪心理咨询进展，按中心建议做好阶段评估；建立“一对一”学业帮扶的长效机制，帮其把落下的课程逐步补齐，避免因学业受挫引发情绪反复；鼓励其稳定参与篮球等集体活动，逐步扩大社交圈；\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809519886_vpt2sl",
+      "sourceFile": {
+        "fileId": "file_1794809519886_1bp0pp"
+      }
     }
   ],
   "friendship": [
@@ -658,7 +670,7 @@
   "absence": [],
   "_files": [
     {
-      "name": "谈心谈话记录纸10月机电2503班（第三次张锦辉）.docx",
+      "name": "谈心谈话记录纸10月机电2503班（第四次张锦辉）.docx",
       "module": "talk",
       "moduleTitle": "谈心谈话",
       "type": "word",
@@ -667,14 +679,14 @@
       "recordCount": 1,
       "isAttachment": true,
       "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "size": 12551,
-      "id": "file_1794809513075_1x4tgs",
-      "createdAt": "2026-11-16T06:11:53.075Z",
+      "size": 12508,
+      "id": "file_1794809519886_1bp0pp",
+      "createdAt": "2026-11-16T06:11:59.886Z",
       "hasContent": true,
-      "contentChars": 16736,
+      "contentChars": 16680,
       "contentChunks": true,
       "contentChunkCount": 1,
-      "contentLength": 16736,
+      "contentLength": 16680,
       "cloudLimited": false,
       "contentIn": "file"
     },
@@ -2179,6 +2191,27 @@
       "contentChunks": true,
       "contentChunkCount": 1,
       "contentLength": 16644,
+      "contentIn": "file"
+    },
+    {
+      "name": "谈心谈话记录纸10月机电2503班（第三次张锦辉）.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12551,
+      "id": "file_1794809513075_1x4tgs",
+      "createdAt": "2026-11-16T06:11:53.075Z",
+      "hasContent": true,
+      "contentChars": 16736,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16736,
       "contentIn": "file"
     }
   ],
