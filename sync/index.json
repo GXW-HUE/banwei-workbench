@@ -283,6 +283,18 @@
       "sourceFile": {
         "fileId": "file_1793851639622_menl6h"
       }
+    },
+    {
+      "date": "2026-11-04",
+      "studentName": "张锦辉",
+      "topic": "谈 心 谈 话 记 录",
+      "content": "谈 心 谈 话 记 录\n\n\n\n谈话时间：  2026 年 11月 4日    谈话地点： 机电309\n\n被谈话人： 机电一体化2503  班  张锦辉  谈话人：     \n\n谈话内容：发现学生近期情绪持续低落、少言寡语，我耐心询问其身心状态，倾听困扰并做心理疏导。\n\n一、学生主要问题\n\n学生近期情绪低落、沉默寡言，注意力涣散、精神疲惫，回避集体活动与同学交流；谈及自身状态多有回避，尚未就医评估，存在抑郁倾向，需尽快关注干预。\n\n二、已采取的应对措施\n\n已第一时间开展一对一谈心，耐心倾听其困扰，舒缓负面情绪、消除戒备心理；及时联系家长反馈在校表现，建议陪同到专科医院做心理评估，纳入重点关注台账。\n\n三、后续拟应对措施\n\n后续将定期谈心疏导，动态掌握情绪与睡眠变化；及时联动家长，督促陪同就医评估并反馈诊断结果；联合心理中心专业疏导，视诊疗情况协助办理请假缓考；联合班委、舍友多关怀陪伴，减轻学业人际压力，建立一人一档跟踪记录，发现苗头即时介入。\n\n",
+      "studentState": "",
+      "followUp": "",
+      "id": "imp_1794809095317_8hj9r1",
+      "sourceFile": {
+        "fileId": "file_1794809095317_osuazg"
+      }
     }
   ],
   "friendship": [
@@ -1982,6 +1994,27 @@
       "contentChunkCount": 1,
       "contentLength": 27444,
       "contentIn": "file"
+    },
+    {
+      "name": "谈心谈话记录纸机电2503班（第一次张锦辉）11.04.docx",
+      "module": "talk",
+      "moduleTitle": "谈心谈话",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 12482,
+      "id": "file_1794809095317_osuazg",
+      "createdAt": "2026-11-16T06:04:55.317Z",
+      "hasContent": true,
+      "contentChars": 16644,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 16644,
+      "contentIn": "file"
     }
   ],
   "_deleted": {
@@ -2004,7 +2037,6 @@
       "imp_1794478216387_nnp52m": 1794667224827
     },
     "talk": {
-      "imp_1792205182504_u9uu5l": 1792205185173,
       "imp_1792205128111_16qne3": 1793526598947,
       "imp_1792205149647_9ow27j": 1793526604413,
       "imp_1792205155836_4z2425": 1793526614138,
@@ -2029,7 +2061,6 @@
     },
     "_files": {
       "file_1791588541950": 1792220564964,
-      "file_1792205182504_xwt6nk": 1792205185173,
       "file_1792743173979_zf4jjj": 1792745330517,
       "file_1792746269677_yu3t9h": 1792746679477,
       "file_1792749705137_31qlvk": 1792750067853,
