@@ -174,6 +174,19 @@
       "sourceFile": {
         "fileId": "file_1791163012168"
       }
+    },
+    {
+      "month": "11月",
+      "item": "十一月排查",
+      "content": "",
+      "findings": "",
+      "measures": "",
+      "responsible": "",
+      "status": "已整改",
+      "id": "imp_1795091531012_nankxt",
+      "sourceFile": {
+        "fileId": "file_1795091531011_lf3blu"
+      }
     }
   ],
   "talk": [
@@ -853,6 +866,27 @@
   "leave": [],
   "absence": [],
   "_files": [
+    {
+      "name": "机电一体化2503班十一月排查.docx",
+      "module": "monthly",
+      "moduleTitle": "月排查",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 13193,
+      "id": "file_1795091531011_lf3blu",
+      "createdAt": "2026-11-19T12:32:11.011Z",
+      "hasContent": true,
+      "contentChars": 17592,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 17592,
+      "cloudLimited": false,
+      "contentIn": "file"
+    },
     {
       "name": "10.2紧绷消防安全之弦 守好校园平安底线）.docx",
       "module": "meeting",
