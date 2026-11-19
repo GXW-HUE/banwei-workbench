@@ -133,6 +133,19 @@
       "sourceFile": {
         "fileId": "file_1794667513546_iqjsv2"
       }
+    },
+    {
+      "weekNum": "第11周",
+      "dateRange": "",
+      "study": "",
+      "discipline": "",
+      "hygiene": "",
+      "issues": "",
+      "measures": "周 分 析\n\n班 级\n\n机电一体化2503\n\n周 11次\n\n2026-2027学年第一学期\n\n第11周\n\n学风情况\n\n第11周学风总体保持稳定。绝大部分同学学习态度端正，课堂出勤率良好，听讲认真，作业基本能按时完成，班级整体学习氛围浓厚。但也存在个别同学上课注意力不集中、迟到及作业敷衍的现象。后续需进一步强化考勤纪律，加强对学习困难同学的帮扶与督促，持续巩固班级优良学风。\n\n\n\n思想舆情\n\n思想舆情整体平稳，学生思想动态积极向上。日常学习生活中，班级凝聚力较强，同学间关系融洽，未发现明显思想波动或负面情绪聚集现象。大家普遍关注期中阶段性学习任务及专业技能发展，心态较为积极。后续建议继续通过班团活动与日常谈心，及时掌握学生思想苗头，做好引导。\n\n矛盾排查\n\n本周矛盾排查情况显示，班级整体和谐平稳，未发现重大矛盾纠纷或安全隐患。日常相处中同学关系融洽，仅存在个别因作息时间差异、宿舍卫生打扫等生活琐事引发的小摩擦。目前均已通过舍长协调与谈心沟通妥善化解，未造成不良影响。后续将继续发挥班委及寝室长的网格排查作用，做到早发现、早介入，营造安全稳定的班级环境。\n\n心理健康\n\n第11周心理健康状况整体平稳，未发现心理危机情况。同学们情绪积极，能较好地适应学习节奏。日常排查显示，个别同学因课业压力偶有焦虑情绪，经班委与辅导员谈心疏导已有效缓解。后续将持续关注重点学生动态，开展心理普谈与辅导，护航身心健康。\n\n其他情况\n\n\n\n\n\n",
+      "id": "imp_1795089912640_o3zjq4",
+      "sourceFile": {
+        "fileId": "file_1795089912639_nhxvkv"
+      }
     }
   ],
   "monthly": [
@@ -2677,6 +2690,27 @@
       "contentChunks": true,
       "contentChunkCount": 1,
       "contentLength": 238564,
+      "contentIn": "file"
+    },
+    {
+      "name": "机电一体化2503第11周周分析.docx",
+      "module": "weekly",
+      "moduleTitle": "周分析",
+      "type": "word",
+      "label": "Word 文档",
+      "icon": "📄",
+      "recordCount": 1,
+      "isAttachment": true,
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 14415,
+      "id": "file_1795089912639_nhxvkv",
+      "createdAt": "2026-11-19T12:05:12.639Z",
+      "hasContent": true,
+      "contentChars": 19220,
+      "cloudLimited": false,
+      "contentChunks": true,
+      "contentChunkCount": 1,
+      "contentLength": 19220,
       "contentIn": "file"
     }
   ],
